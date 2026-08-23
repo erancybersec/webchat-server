@@ -1,0 +1,24 @@
+# Production compose for the studio host (replaces the v1 wrapper container).
+# No host ports — the Cloudflare tunnel reaches this by container name on
+# app-network:  wa.tapdance.co.il -> http://webchat:8080
+services:
+  webchat:
+    build: .
+    image: wa-webchat-v2:latest
+    container_name: webchat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Every 'HH:MM' the server acts on is that clock in the CONTAINER's zone:
+      # quiet hours, and a campaign's sending window ("pause at 21:00, continue
+      # at 09:00"). Without this the container runs on UTC and those fire three
+      # hours early. `.env` may override with its own TZ.
+      TZ: ${TZ:-Asia/Jerusalem}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    external: true

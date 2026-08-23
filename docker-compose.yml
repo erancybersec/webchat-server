@@ -1,0 +1,22 @@
+services:
+  webchat:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Every 'HH:MM' the server acts on — quiet hours, a campaign's sending
+      # window — is that clock in the CONTAINER's zone. Without this it is UTC,
+      # so "pause at 21:00" would fire at midnight local time.
+      TZ: ${TZ:-Asia/Jerusalem}
+    volumes:
+      # SQLite database (jobs, send ledger, blacklist)
+      - ./data:/app/data
+    ports:
+      - "8080:8080"
+    # Running behind a tunnel/reverse-proxy on a shared docker network instead?
+    # Drop the ports: mapping and uncomment:
+    # networks: [app-network]
+
+# networks:
+#   app-network:
+#     external: true

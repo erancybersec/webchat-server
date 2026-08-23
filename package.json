@@ -1,0 +1,26 @@
+{
+  "name": "webchat",
+  "private": true,
+  "description": "WhatsApp manager on top of Evolution API: React frontend + Node backend (scheduling with a resumable send ledger, blacklist enforcement, chat gateway).",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm -w backend run dev",
+    "dev:frontend": "npm -w frontend run dev",
+    "dev:local:api": "node --env-file=.env.dev --import tsx --watch backend/src/index.ts",
+    "dev:local:web": "npm -w frontend run dev",
+    "seed:dev": "tsx scripts/seed-dev-agents.ts",
+    "build": "npm -w backend run build && npm -w frontend run build",
+    "test": "npm -w backend test && npm -w frontend test",
+    "typecheck": "npm -w backend run typecheck && npm -w frontend run typecheck"
+  },
+  "optionalDependencies": {
+    "@esbuild/win32-x64": "^0.28.0"
+  }
+}

@@ -1,0 +1,21 @@
+# dependencies / build
+node_modules/
+dist/
+coverage/
+
+# runtime state — never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# local scratch
+*.log
+
+# operator deploy log — real customer names/numbers, kept local only
+deploy/HISTORY.md

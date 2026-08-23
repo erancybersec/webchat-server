@@ -1,0 +1,201 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-wa: #16a34a;
+  --color-wa-dark: #15803d;
+  /* chat thread background + own-message bubble (WhatsApp light theme) */
+  --color-chat: #efeae2;
+  --color-bubble-me: #d9fdd3;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* consistent Latin + Hebrew rendering across platforms */
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    'Noto Sans Hebrew',
+    Arial,
+    sans-serif;
+}
+
+/* thin, theme-aware scrollbars (native ones glare in dark mode) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(0 0 0 / 0.25) transparent;
+}
+.dark * {
+  scrollbar-color: rgb(255 255 255 / 0.22) transparent;
+}
+
+/* micro-transitions: dialogs pop, toasts rise */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.animate-pop {
+  animation: pop-in 0.15s ease-out;
+}
+.animate-rise {
+  animation: rise-in 0.18s ease-out;
+}
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
+}
+
+button {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+/* UI chrome is not selectable text: no caret-browsing caret, no blue
+   highlight when double-clicking buttons/tabs. Inputs, textareas and
+   message content stay selectable. */
+button,
+[role='button'],
+[role='tab'],
+label,
+nav,
+summary,
+th {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* fallback avatar chip — hue set per contact via --av-h */
+.avatar-fallback {
+  background-color: hsl(var(--av-h) 45% 84%);
+  color: hsl(var(--av-h) 45% 28%);
+}
+.dark .avatar-fallback {
+  background-color: hsl(var(--av-h) 30% 32%);
+  color: hsl(var(--av-h) 45% 85%);
+}
+
+/*
+ * Dark mode: the app styles everything with the stock Tailwind palette, so
+ * remapping the palette variables under `.dark` re-themes every utility
+ * (bg-gray-*, text-gray-*, border-*, hover variants…) without touching
+ * component code. Values lean on WhatsApp Web's dark theme.
+ */
+.dark {
+  color-scheme: dark;
+
+  --color-wa-dark: #4ade80; /* used as accent TEXT everywhere — must be readable on dark */
+  --color-chat: #0b141a;
+  --color-bubble-me: #005c4b;
+
+  /* gray scale: backgrounds darken, text lightens */
+  --color-gray-50: #15202b;
+  --color-gray-100: #283744;
+  --color-gray-200: #36475a;
+  --color-gray-300: #46586c;
+  --color-gray-400: #8696a0;
+  --color-gray-500: #aebac1;
+  --color-gray-600: #d1d7db;
+  --color-gray-700: #e1e7eb;
+  --color-gray-800: #e9edef;
+  --color-gray-900: #f0f4f6;
+
+  /* tint backgrounds → dark tints; strong text shades → light */
+  --color-green-50: #103529;
+  --color-green-100: #14443a;
+  --color-green-200: #1b5e4f;
+  --color-green-300: #1f7a63;
+  --color-red-50: #35201f;
+  --color-red-100: #43292a;
+  --color-red-200: #5b3134;
+  --color-red-300: #7f4348;
+  --color-red-600: #f87171;
+  --color-amber-50: #332608;
+  --color-amber-100: #4a3408;
+  --color-amber-300: #8a6d1d;
+  --color-amber-400: #a07f1f;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-blue-50: #1e3a5f;
+  --color-blue-100: #1e3a5f;
+  --color-blue-600: #60a5fa;
+  --color-blue-700: #93c5fd;
+  --color-orange-100: #4a2e08;
+  --color-orange-700: #fdba74;
+}
+
+/* bg-white is "surface"; text-white must stay white — override the surface
+   usages by class instead of remapping --color-white. */
+.dark .bg-white {
+  background-color: #1f2a33;
+}
+.dark .bg-white\/70 {
+  background-color: rgb(31 42 51 / 0.7);
+}
+.dark .bg-white\/80 {
+  background-color: rgb(31 42 51 / 0.8);
+}
+.dark .bg-white\/90 {
+  background-color: rgb(31 42 51 / 0.9);
+}
+.dark .hover\:bg-white:hover {
+  background-color: #243240;
+}
+.dark .bg-black\/5 {
+  background-color: rgb(255 255 255 / 0.06);
+}
+.dark .hover\:bg-black\/5:hover {
+  background-color: rgb(255 255 255 / 0.08);
+}
+.dark .hover\:bg-black\/10:hover {
+  background-color: rgb(255 255 255 / 0.12);
+}
+
+/* Native <select> drop-downs are painted by the platform from the ELEMENT's own
+   computed background — and Tailwind's preflight resets form controls to
+   `background-color: transparent`, which also defeats `color-scheme: dark`. The
+   popup therefore came out white while the options inherited the dark theme's
+   light text, leaving them nearly unreadable. Give every select a real surface
+   and text colour so the popup follows the theme; `option` needs its own pair
+   because the popup is not styled as a normal descendant. Call sites that set
+   their own `bg-*` class still win on specificity. */
+select {
+  background-color: #fff;
+  color: var(--color-gray-800);
+}
+.dark select,
+.dark select option {
+  background-color: #1f2a33;
+  color: var(--color-gray-800);
+}
