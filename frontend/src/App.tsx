@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { ConfirmProvider } from './components/Confirm';
 import { ToastProvider, useToast } from './components/Toast';
 import { agentBadgeClass, agentLabel, useMe, usePerm } from './lib/agents';
@@ -61,12 +62,10 @@ function MoreMenu({
   variant,
   tabs,
   activeId,
-  onPick,
 }: {
   variant: 'desktop' | 'mobile';
   tabs: Tab[];
   activeId: TabId;
-  onPick: (id: TabId) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -120,13 +119,11 @@ function MoreMenu({
           }`}
         >
           {tabs.map((t) => (
-            <button
+            <Link
               key={t.id}
+              to={`/${t.id}`}
               role="menuitem"
-              onClick={() => {
-                onPick(t.id);
-                setOpen(false);
-              }}
+              onClick={() => setOpen(false)}
               className={`flex w-full items-center gap-2 px-3 py-2 text-sm ${
                 activeId === t.id ? 'bg-wa text-white' : 'text-gray-600 hover:bg-gray-100'
               }`}
@@ -135,7 +132,7 @@ function MoreMenu({
                 <path strokeLinecap="round" strokeLinejoin="round" d={t.icon} />
               </svg>
               <span>{t.label}</span>
-            </button>
+            </Link>
           ))}
         </div>
       )}
@@ -287,7 +284,10 @@ function ThemeIcon({ theme, className }: { theme: Theme; className?: string }) {
 }
 
 function App() {
-  const [tab, setTab] = useState<TabId>('chat');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const pathTab = location.pathname.slice(1);
+  const tab: TabId = (TABS.some((t) => t.id === pathTab) ? pathTab : 'chat') as TabId;
   const [theme, setTheme] = useState<Theme>(initialTheme);
   // an open thread takes the whole mobile viewport — hide the tab bar (the
   // thread header's ← already leads back to the list)
@@ -309,26 +309,29 @@ function App() {
   const moreTabs = tabs.filter((t) => !PRIMARY_TABS.includes(t.id));
   const mobilePrimaryTabs = tabs.filter((t) => MOBILE_PRIMARY_TABS.includes(t.id));
   const mobileMoreTabs = tabs.filter((t) => !MOBILE_PRIMARY_TABS.includes(t.id));
-  useEffect(() => {
-    if (hidden.has(tab)) setTab('chat');
-  }, [tab, canSettings, canInsights, canOwnInsights]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A hidden tab's route redirects to Chat instead (see `guard` below) —
+  // declarative, so it can't race the render the way the old setTab-in-effect did.
+  const guard = (id: TabId, element: ReactElement) => (hidden.has(id) ? <Navigate to="/chat" replace /> : element);
   // Where a clicked notification (or in-app deep link) wants to land. Cleared
   // by the destination page once it has opened the chat / focused the job, so a
   // later remount of that page doesn't re-apply a stale target.
   const [chatTarget, setChatTarget] = useState<{ jid: string; msg: string | null } | null>(null);
   const [jobTarget, setJobTarget] = useState<string | null>(null);
-  const applyTarget = useCallback((t: NavTarget | null) => {
-    if (!t) return;
-    if (t.chat) {
-      setTab('chat');
-      setChatTarget({ jid: t.chat, msg: t.msg ?? null });
-    } else if (t.job) {
-      setTab('history');
-      setJobTarget(t.job);
-    } else if (t.tab && TABS.some((x) => x.id === t.tab)) {
-      setTab(t.tab as TabId);
-    }
-  }, []);
+  const applyTarget = useCallback(
+    (t: NavTarget | null) => {
+      if (!t) return;
+      if (t.chat) {
+        navigate('/chat', { replace: true });
+        setChatTarget({ jid: t.chat, msg: t.msg ?? null });
+      } else if (t.job) {
+        navigate('/history', { replace: true });
+        setJobTarget(t.job);
+      } else if (t.tab && TABS.some((x) => x.id === t.tab)) {
+        navigate(`/${t.tab}`, { replace: true });
+      }
+    },
+    [navigate],
+  );
 
   // Deep links: the composer's "manage all" link, and notification clicks
   // routed in-page from the service worker (see lib/nav, public/sw.js).
@@ -342,11 +345,10 @@ function App() {
   // read it off the URL once (then strip it so a refresh doesn't re-navigate).
   // Warm start: an already-open tab gets the destination posted by the SW.
   useEffect(() => {
+    // applyTarget's own navigate(..., { replace: true }) already lands on a
+    // clean tab path, which drops the ?chat=/?job= query string for us.
     const cold = targetFromUrl(window.location.href);
-    if (cold) {
-      applyTarget(cold);
-      window.history.replaceState(null, '', window.location.pathname);
-    }
+    if (cold) applyTarget(cold);
     const onMsg = (e: MessageEvent) => {
       if (e.data?.type === 'navigate' && typeof e.data.url === 'string') {
         applyTarget(targetFromUrl(e.data.url));
@@ -384,9 +386,9 @@ function App() {
         <h1 className="shrink-0 text-lg font-bold text-wa-dark">WhatsApp Manager</h1>
         <nav className="flex gap-1 max-md:hidden" aria-label="Main">
           {primaryTabs.map((t) => (
-            <button
+            <Link
               key={t.id}
-              onClick={() => setTab(t.id)}
+              to={`/${t.id}`}
               aria-label={t.label}
               title={t.label}
               className={`relative flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
@@ -402,9 +404,9 @@ function App() {
                   {unreadTotal > 99 ? '99+' : unreadTotal}
                 </span>
               )}
-            </button>
+            </Link>
           ))}
-          <MoreMenu variant="desktop" tabs={moreTabs} activeId={tab} onPick={setTab} />
+          <MoreMenu variant="desktop" tabs={moreTabs} activeId={tab} />
         </nav>
         <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-gray-400">
           <InstanceSwitcher />
@@ -448,13 +450,13 @@ function App() {
         aria-label="Main"
       >
         <div className="flex shrink-0 items-center border-r border-gray-100 pl-1 pr-1">
-          <MoreMenu variant="mobile" tabs={mobileMoreTabs} activeId={tab} onPick={setTab} />
+          <MoreMenu variant="mobile" tabs={mobileMoreTabs} activeId={tab} />
         </div>
         <div className="flex flex-1 overflow-x-auto">
           {mobilePrimaryTabs.map((t) => (
-            <button
+            <Link
               key={t.id}
-              onClick={() => setTab(t.id)}
+              to={`/${t.id}`}
               aria-label={t.label}
               className={`relative flex w-[58px] shrink-0 flex-col items-center gap-0.5 py-1.5 ${
                 tab === t.id ? 'text-wa-dark' : 'text-gray-400'
@@ -469,7 +471,7 @@ function App() {
                   {unreadTotal > 99 ? '99+' : unreadTotal}
                 </span>
               )}
-            </button>
+            </Link>
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-1 border-l border-gray-100 pl-1 pr-1">
@@ -484,31 +486,41 @@ function App() {
         </div>
       </nav>
       <main className="min-h-0 flex-1">
-        {tab === 'chat' && (
-          <ChatPage
-            onThreadOpenChange={setThreadOpen}
-            openChat={chatTarget}
-            onChatOpened={() => setChatTarget(null)}
+        <Routes>
+          <Route path="/" element={<Navigate to="/chat" replace />} />
+          <Route
+            path="/chat"
+            element={
+              <ChatPage
+                onThreadOpenChange={setThreadOpen}
+                openChat={chatTarget}
+                onChatOpened={() => setChatTarget(null)}
+              />
+            }
           />
-        )}
-        {tab === 'groups' && <GroupsPage />}
-        {tab === 'compose' && <ComposePage />}
-        {tab === 'lists' && <ListsPage />}
-        {tab === 'insights' && <InsightsPage />}
-        {tab === 'tools' && <ToolsPage />}
-        {tab === 'quickreplies' && <QuickRepliesPage />}
-        {tab === 'scheduled' && <JobsPage scope="scheduled" onCompose={() => setTab('compose')} />}
-        {tab === 'history' && (
-          <JobsPage
-            scope="history"
-            onCompose={() => setTab('compose')}
-            focusJob={jobTarget}
-            onJobFocused={() => setJobTarget(null)}
+          <Route path="/groups" element={<GroupsPage />} />
+          <Route path="/compose" element={<ComposePage />} />
+          <Route path="/lists" element={<ListsPage />} />
+          <Route path="/insights" element={guard('insights', <InsightsPage />)} />
+          <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/quickreplies" element={<QuickRepliesPage />} />
+          <Route path="/scheduled" element={<JobsPage scope="scheduled" onCompose={() => navigate('/compose')} />} />
+          <Route
+            path="/history"
+            element={
+              <JobsPage
+                scope="history"
+                onCompose={() => navigate('/compose')}
+                focusJob={jobTarget}
+                onJobFocused={() => setJobTarget(null)}
+              />
+            }
           />
-        )}
-        {tab === 'blacklist' && <BlacklistPage />}
-        {tab === 'profile' && <ProfilePage />}
-        {tab === 'settings' && <SettingsPage />}
+          <Route path="/blacklist" element={<BlacklistPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={guard('settings', <SettingsPage />)} />
+          <Route path="*" element={<Navigate to="/chat" replace />} />
+        </Routes>
       </main>
     </div>
   );
@@ -516,10 +528,12 @@ function App() {
 
 export default function AppRoot() {
   return (
-    <ToastProvider>
-      <ConfirmProvider>
-        <App />
-      </ConfirmProvider>
-    </ToastProvider>
+    <BrowserRouter>
+      <ToastProvider>
+        <ConfirmProvider>
+          <App />
+        </ConfirmProvider>
+      </ToastProvider>
+    </BrowserRouter>
   );
 }
