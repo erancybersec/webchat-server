@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import CampaignPanel from '../components/CampaignPanel';
 import { useConfirm } from '../components/Confirm';
 import SequenceView from '../components/SequenceView';
@@ -8,7 +8,10 @@ import { agentBadgeClass, agentLabel, useAgents, useMe, usePerm } from '../lib/a
 import { api } from '../lib/api';
 import { clockLabel, isCampaign } from '../lib/campaign';
 import { setComposeDraft } from '../lib/composeDraft';
+import { initialDensity, saveDensity, type Density } from '../lib/jobDensity';
+import { groupJobsByDay } from '../lib/groupJobsByDay';
 import { jobOriginLabel } from '../lib/jobLabels';
+import { useDebounced } from '../lib/useDebounced';
 import { useJobProgress } from '../lib/useJobProgress';
 import { recipientLabel, recipientName, useRecipientNames } from '../lib/useRecipientNames';
 import type { Agent, Job, JobItem, JobProgress, JobScope, JobSend, JobStatus, SendStatus } from '../types';
@@ -70,6 +73,33 @@ function relTime(iso: string): string {
         ? [Math.round(abs / 3_600_000), 'h']
         : [Math.max(1, Math.round(abs / 60_000)), 'm'];
   return diff > 0 ? `in ${n}${u}` : `${n}${u} ago`;
+}
+
+/** One row action, described as data so comfortable (inline buttons) and
+ * compact (kebab menu) density render from the same source. */
+interface RowAction {
+  key: string;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  /** the solid green "primary" pill (Approve / Continue) */
+  solid?: boolean;
+  color?: 'red' | 'amber' | 'blue' | 'green';
+}
+const ACTION_COLOR: Record<NonNullable<RowAction['color']>, string> = {
+  red: 'text-red-600 hover:bg-red-50',
+  amber: 'text-amber-600 hover:bg-amber-50',
+  blue: 'text-blue-600 hover:bg-blue-50',
+  green: 'text-wa-dark hover:bg-green-50',
+};
+function actionButtonClass(a: RowAction): string {
+  if (a.solid) return 'rounded bg-wa px-2 py-1 text-xs font-medium text-white hover:bg-wa-dark disabled:opacity-50';
+  return `rounded px-2 py-1 text-xs font-medium ${ACTION_COLOR[a.color ?? 'blue']} disabled:opacity-50`;
+}
+function menuItemClass(a: RowAction): string {
+  const color = a.solid ? 'text-wa-dark font-semibold' : ACTION_COLOR[a.color ?? 'blue'].split(' ')[0];
+  return `block w-full px-3 py-1.5 text-left text-xs font-medium hover:bg-gray-100 disabled:opacity-50 ${color}`;
 }
 
 const SEND_STATUS_STYLE: Record<SendStatus, string> = {
@@ -435,6 +465,10 @@ function JobRow({
   onCompose,
   progress,
   flash = false,
+  density = 'comfortable',
+  selecting = false,
+  selected = false,
+  onToggleSelect,
 }: {
   job: Job;
   scope: JobScope;
@@ -444,11 +478,26 @@ function JobRow({
   progress?: JobProgress;
   /** briefly ring-highlight this row after a notification deep-link */
   flash?: boolean;
+  density?: Density;
+  /** bulk-select mode is on for the whole list */
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
   const confirmDlg = useConfirm();
   const [open, setOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
   const canApprove = usePerm('jobs.approve');
   const me = useMe();
   const invalidate = () => qc.invalidateQueries({ queryKey: ['jobs'] });
@@ -585,6 +634,102 @@ function JobRow({
     onCompose();
   }
 
+  // The row's action buttons, as data rather than fixed JSX — comfortable
+  // density renders them inline; compact density renders the same list as a
+  // kebab menu, so the two densities never drift out of sync.
+  const actions: RowAction[] = [];
+  if (job.status === 'pending_approval' && canApprove) {
+    actions.push({
+      key: 'approve',
+      label: 'Approve',
+      onClick: () => void confirmApprove(),
+      disabled: approve.isPending,
+      solid: true,
+    });
+    actions.push({ key: 'reject', label: 'Reject', onClick: confirmReject, disabled: reject.isPending, color: 'red' });
+  }
+  if (job.status === 'running' || job.status === 'pending') {
+    actions.push({
+      key: 'pause',
+      label: '⏸ Pause',
+      onClick: () => pause.mutate(),
+      disabled: pause.isPending,
+      color: 'amber',
+      title:
+        job.status === 'running'
+          ? 'Stop after the message being sent right now — the rest waits for you'
+          : 'Hold it: it will not fire at its scheduled time until you continue it',
+    });
+  }
+  if (
+    job.status === 'paused' ||
+    (job.status === 'cancelled' && !!job.startedAt) ||
+    (job.status === 'pending' && !!job.startedAt && new Date(job.scheduledAt).getTime() > Date.now())
+  ) {
+    actions.push({
+      key: 'resume',
+      label: `▶ Continue${job.status === 'pending' ? ' now' : ''}`,
+      onClick: () => resume.mutate(),
+      disabled: resume.isPending,
+      solid: true,
+      title: 'Pick up exactly where the ledger left off — nobody is messaged twice',
+    });
+  }
+  // offered whenever the job reports failures and nothing is in flight. The
+  // count comes from the row's own result line (or the live event), so the
+  // list costs no extra request per row; the server re-checks the ledger and
+  // 409s if there is nothing left to retry.
+  if (!!failedCount && job.status !== 'running' && job.status !== 'pending_approval') {
+    actions.push({
+      key: 'retry',
+      label: `↻ Retry ${failedCount} failed`,
+      onClick: () => retryFailed.mutate(),
+      disabled: retryFailed.isPending,
+      color: 'red',
+      title: 'Send only to the recipients whose message failed — the rest are untouched',
+    });
+  }
+  if (RESENDABLE.includes(job.status) || EDIT_IN_PLACE.includes(job.status)) {
+    actions.push({
+      key: 'edit',
+      // a job that has already sent is always edited "for the rest"
+      label: EDIT_IN_PLACE.includes(job.status) ? (job.startedAt ? 'Edit remaining' : 'Edit') : 'Edit & resend',
+      onClick: editInCompose,
+      color: 'blue',
+      title:
+        job.startedAt && EDIT_IN_PLACE.includes(job.status)
+          ? 'Edit the message — it applies to everyone still to be sent to'
+          : undefined,
+    });
+  }
+  if (RESENDABLE.includes(job.status)) {
+    actions.push({
+      key: 'resend',
+      label: 'Resend',
+      onClick: () => void confirmResend(),
+      disabled: rerun.isPending,
+      color: 'green',
+    });
+  }
+  if (
+    job.status === 'pending' ||
+    job.status === 'running' ||
+    job.status === 'paused' ||
+    (job.status === 'pending_approval' && (canApprove || !job.sentBy || job.sentBy === me.data?.email))
+  ) {
+    actions.push({
+      key: 'cancel',
+      label: job.status === 'pending_approval' ? 'Withdraw' : job.startedAt ? 'Stop' : 'Cancel',
+      onClick: () => cancel.mutate(),
+      color: 'amber',
+      title: job.startedAt ? 'Stop for good — what is already sent stays sent' : undefined,
+    });
+  }
+  if (job.status === 'cancelled' && new Date(job.scheduledAt).getTime() > Date.now()) {
+    actions.push({ key: 'restore', label: 'Restore', onClick: () => restore.mutate(), color: 'blue' });
+  }
+  actions.push({ key: 'delete', label: 'Delete', onClick: () => void confirmDelete(), color: 'red' });
+
   return (
     <div
       id={`job-${job.id}`}
@@ -596,6 +741,15 @@ function JobRow({
           "Detail" button; action buttons stop the click from bubbling */}
       <div onClick={() => setOpen(!open)} className="cursor-pointer">
         <div className="flex flex-wrap items-center gap-3 px-3 pt-2">
+          {selecting && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelect}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 accent-(--color-wa)"
+            />
+          )}
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[job.status]}`}>
             {statusLabel(job.status)}
           </span>
@@ -633,7 +787,7 @@ function JobRow({
             </span>
           )}
           <span className="text-sm font-medium">{new Date(job.scheduledAt).toLocaleString()}</span>
-          <span className="text-xs text-gray-400">{relTime(job.scheduledAt)}</span>
+          {density === 'comfortable' && <span className="text-xs text-gray-400">{relTime(job.scheduledAt)}</span>}
           <span className="text-xs text-gray-500" dir="auto">
             to{' '}
             {job.recipients.slice(0, 2).map((r, i) => (
@@ -654,117 +808,36 @@ function JobRow({
             {job.items.length} item{job.items.length === 1 ? '' : 's'}
           </span>
           <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          {job.status === 'pending_approval' && canApprove && (
-            <>
+          {density === 'compact' ? (
+            <div ref={menuRef} className="relative">
               <button
-                onClick={() => void confirmApprove()}
-                disabled={approve.isPending}
-                className="rounded bg-wa px-2 py-1 text-xs font-medium text-white hover:bg-wa-dark disabled:opacity-50"
+                onClick={() => setMenuOpen(!menuOpen)}
+                aria-label="More actions"
+                aria-expanded={menuOpen}
+                className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-gray-500 hover:border-wa hover:text-wa-dark"
               >
-                Approve
+                ⋯
               </button>
-              <button
-                onClick={confirmReject}
-                disabled={reject.isPending}
-                className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-              >
-                Reject
+              {menuOpen && (
+                <div
+                  className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  {actions.map((a) => (
+                    <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={menuItemClass(a)}>
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            actions.map((a) => (
+              <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={actionButtonClass(a)}>
+                {a.label}
               </button>
-            </>
+            ))
           )}
-          {(job.status === 'running' || job.status === 'pending') && (
-            <button
-              onClick={() => pause.mutate()}
-              disabled={pause.isPending}
-              title={
-                job.status === 'running'
-                  ? 'Stop after the message being sent right now — the rest waits for you'
-                  : 'Hold it: it will not fire at its scheduled time until you continue it'
-              }
-              className="rounded px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-            >
-              ⏸ Pause
-            </button>
-          )}
-          {(job.status === 'paused' ||
-            (job.status === 'cancelled' && !!job.startedAt) ||
-            (job.status === 'pending' &&
-              !!job.startedAt &&
-              new Date(job.scheduledAt).getTime() > Date.now())) && (
-            <button
-              onClick={() => resume.mutate()}
-              disabled={resume.isPending}
-              title="Pick up exactly where the ledger left off — nobody is messaged twice"
-              className="rounded bg-wa px-2 py-1 text-xs font-medium text-white hover:bg-wa-dark disabled:opacity-50"
-            >
-              ▶ Continue{job.status === 'pending' ? ' now' : ''}
-            </button>
-          )}
-          {/* offered whenever the job reports failures and nothing is in flight.
-              The count comes from the row's own result line (or the live event),
-              so the list costs no extra request per row; the server re-checks
-              the ledger and 409s if there is nothing left to retry. */}
-          {!!failedCount && job.status !== 'running' && job.status !== 'pending_approval' && (
-            <button
-              onClick={() => retryFailed.mutate()}
-              disabled={retryFailed.isPending}
-              title="Send only to the recipients whose message failed — the rest are untouched"
-              className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-            >
-              ↻ Retry {failedCount} failed
-            </button>
-          )}
-          {(RESENDABLE.includes(job.status) || EDIT_IN_PLACE.includes(job.status)) && (
-            <button
-              onClick={editInCompose}
-              title={
-                job.startedAt && EDIT_IN_PLACE.includes(job.status)
-                  ? 'Edit the message — it applies to everyone still to be sent to'
-                  : undefined
-              }
-              className="rounded px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-            >
-              {/* a job that has already sent is always edited "for the rest" */}
-              {EDIT_IN_PLACE.includes(job.status)
-                ? job.startedAt
-                  ? 'Edit remaining'
-                  : 'Edit'
-                : 'Edit & resend'}
-            </button>
-          )}
-          {RESENDABLE.includes(job.status) && (
-            <button
-              onClick={() => void confirmResend()}
-              disabled={rerun.isPending}
-              className="rounded px-2 py-1 text-xs text-wa-dark hover:bg-green-50 disabled:opacity-50"
-            >
-              Resend
-            </button>
-          )}
-          {(job.status === 'pending' || job.status === 'running' || job.status === 'paused' ||
-            (job.status === 'pending_approval' && (canApprove || !job.sentBy || job.sentBy === me.data?.email))) && (
-            <button
-              onClick={() => cancel.mutate()}
-              title={job.startedAt ? 'Stop for good — what is already sent stays sent' : undefined}
-              className="rounded px-2 py-1 text-xs text-amber-600 hover:bg-amber-50"
-            >
-              {job.status === 'pending_approval' ? 'Withdraw' : job.startedAt ? 'Stop' : 'Cancel'}
-            </button>
-          )}
-          {job.status === 'cancelled' && new Date(job.scheduledAt).getTime() > Date.now() && (
-            <button
-              onClick={() => restore.mutate()}
-              className="rounded px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-            >
-              Restore
-            </button>
-          )}
-          <button
-            onClick={() => void confirmDelete()}
-            className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
-          >
-            Delete
-          </button>
           <div className="mx-1 h-5 w-px shrink-0 self-stretch bg-gray-200" />
           <button
             onClick={() => setOpen(!open)}
@@ -787,11 +860,14 @@ function JobRow({
           </button>
           </div>
         </div>
-        {/* the messages themselves, always visible — every item as icon +
-            snippet, clamped to two lines so long blasts don't flood the list */}
-        <div className="line-clamp-2 px-3 pt-1 pb-2 text-xs leading-5 text-gray-600" dir="auto">
-          {job.items.map((it) => itemSnippet(it).slice(0, 160)).join('  ·  ')}
-        </div>
+        {/* the messages themselves — every item as icon + snippet, clamped to
+            two lines so long blasts don't flood the list. Compact density
+            drops this line entirely: click the row for the full detail. */}
+        {density === 'comfortable' && (
+          <div className="line-clamp-2 px-3 pt-1 pb-2 text-xs leading-5 text-gray-600" dir="auto">
+            {job.items.map((it) => itemSnippet(it).slice(0, 160)).join('  ·  ')}
+          </div>
+        )}
         {/* A big send gets the campaign panel: ledger-accurate progress plus
             Pause / Continue. Anything smaller keeps the plain live bar. */}
         {isCampaign(job) ? (
@@ -867,6 +943,7 @@ export default function JobsPage({
   onJobFocused?: () => void;
 }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const confirmDlg = useConfirm();
   const [filter, setFilter] = useState<JobStatus | 'all'>('all');
   const status = filter === 'all' ? undefined : filter;
@@ -875,12 +952,32 @@ export default function JobsPage({
   const agentsQ = useAgents();
   const agents = new Map((agentsQ.data ?? []).map((a) => [a.email, a]));
 
+  const [rawQuery, setRawQuery] = useState('');
+  const query = useDebounced(rawQuery, 250);
+  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
+  const [density, setDensity] = useState<Density>(initialDensity);
+  function setDensityAndSave(d: Density) {
+    setDensity(d);
+    saveDensity(d);
+  }
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
   // Server-side pages: with hundreds of jobs only PAGE_SIZE rows travel per
-  // request; "Load more" appends the next slice.
+  // request; "Load more" appends the next slice. Search and sort direction
+  // are server round trips too (same idiom as the status filter), so the
+  // chip counts and "total" always reflect what's actually being searched.
   const pages = useInfiniteQuery({
-    queryKey: ['jobs', scope, filter],
+    queryKey: ['jobs', scope, filter, query, dir],
     queryFn: ({ pageParam }) =>
-      api.jobs.page(scope, { status, limit: PAGE_SIZE, offset: pageParam }),
+      api.jobs.page(scope, { status, limit: PAGE_SIZE, offset: pageParam, q: query, sort: dir }),
     initialPageParam: 0,
     getNextPageParam: (last, all) => {
       const loaded = all.reduce((n, p) => n + p.jobs.length, 0);
@@ -891,6 +988,16 @@ export default function JobsPage({
   const clearDone = useMutation({
     mutationFn: () => api.jobs.clearDone(scope),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+  });
+
+  // History-only: job counts per day over the last 30 days, for the volume
+  // strip. Fetched only for the History tab — the Scheduled queue has no use
+  // for "how much fired on day X" navigation.
+  const volumeQ = useQuery({
+    queryKey: ['jobs-volume'],
+    queryFn: () => api.jobs.volume(30),
+    enabled: scope === 'history',
+    staleTime: 60_000,
   });
 
   async function confirmClear() {
@@ -936,6 +1043,99 @@ export default function JobsPage({
     return () => window.clearTimeout(t);
   }, [flashJob]);
 
+  // Day-grouped headers, tapering to per-month for older jobs. `jobs` is
+  // already server-sorted by `dir`, and grouping preserves that order, so
+  // flipping the sort toggle flips group order for free.
+  const groups = useMemo(() => groupJobsByDay(jobs, new Date()), [jobs]);
+
+  function selectAllVisible() {
+    setSelected(new Set(jobs.map((j) => j.id)));
+  }
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  // Bulk pause/cancel reuse the single-row endpoints (no new backend surface
+  // needed) — Promise.allSettled, not a throttled loop, since these are local
+  // DB writes rather than outbound WhatsApp sends. Only jobs actually in a
+  // pausable/cancellable status are touched; the rest are silently skipped,
+  // same statuses the single-row Pause/Cancel buttons already gate on.
+  const bulkPause = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const targets = jobs.filter((j) => ids.includes(j.id) && (j.status === 'running' || j.status === 'pending'));
+      const results = await Promise.allSettled(targets.map((j) => api.jobs.pause(j.id)));
+      return { ok: results.filter((r) => r.status === 'fulfilled').length, total: targets.length };
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      toast(r.total ? `Paused ${r.ok}/${r.total}` : 'None of the selected jobs can be paused');
+    },
+  });
+  const bulkCancel = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const targets = jobs.filter(
+        (j) => ids.includes(j.id) && (j.status === 'pending' || j.status === 'running' || j.status === 'paused'),
+      );
+      const results = await Promise.allSettled(targets.map((j) => api.jobs.cancel(j.id)));
+      return { ok: results.filter((r) => r.status === 'fulfilled').length, total: targets.length };
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      toast(r.total ? `Cancelled ${r.ok}/${r.total}` : 'None of the selected jobs can be cancelled');
+    },
+  });
+  // Bulk-deleting a chosen set is the id-scoped counterpart to Clear —
+  // same irreversibility, so it is gated by the same permission (canClear).
+  const bulkDelete = useMutation({
+    mutationFn: (ids: string[]) => api.jobs.bulkDelete(ids),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      clearSelection();
+      toast(`Deleted ${r.removed} job${r.removed === 1 ? '' : 's'}`);
+    },
+    onError: (e) => toast(String((e as Error).message), 'err'),
+  });
+  async function confirmBulkDelete() {
+    const ids = [...selected];
+    const ok = await confirmDlg({
+      title: `Delete ${ids.length} job${ids.length === 1 ? '' : 's'}?`,
+      body: 'Removed permanently, along with their send ledgers.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (ok) bulkDelete.mutate(ids);
+  }
+
+  // History volume strip: last 30 local days, filled from the day-count
+  // endpoint (bucketed server-side by UTC calendar day — close enough for a
+  // "which day was busy" navigation aid; not worth per-viewer TZ conversion).
+  const volumeByDay = new Map((volumeQ.data ?? []).map((d) => [d.day, d.count]));
+  const localDayKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const today = new Date();
+  const volumeBars =
+    scope === 'history'
+      ? Array.from({ length: 30 }, (_, i) => {
+          const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (29 - i));
+          const key = localDayKey(d);
+          return { day: key, count: volumeByDay.get(key) ?? 0 };
+        })
+      : [];
+  const volumeMax = Math.max(1, ...volumeBars.map((b) => b.count));
+  function jumpToDay(day: string) {
+    const target = jobs.find((j) => localDayKey(new Date(j.scheduledAt)) === day);
+    if (!target) return;
+    const el = document.getElementById(`job-${target.id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setFlashJob(target.id);
+  }
+
+  const sortLabel =
+    scope === 'history'
+      ? dir === 'desc' ? 'Most recent first ↓' : 'Oldest first ↑'
+      : dir === 'desc' ? 'Furthest first ↓' : 'Soonest first ↑';
+
   return (
     <div className="mx-auto max-w-3xl space-y-3 p-4">
       <div className="flex items-center justify-between">
@@ -951,6 +1151,111 @@ export default function JobsPage({
           </button>
         )}
       </div>
+      <div className="flex flex-wrap gap-2">
+        <div className="flex min-w-[160px] flex-1 items-center gap-1.5 rounded-md border border-gray-300 bg-gray-50 px-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" className="shrink-0 text-gray-400">
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="search"
+            value={rawQuery}
+            onChange={(e) => setRawQuery(e.target.value)}
+            placeholder="Search recipient or message…"
+            dir="auto"
+            className="w-full bg-transparent py-1.5 text-xs outline-none placeholder:text-gray-400"
+          />
+        </div>
+        <button
+          onClick={() => setDir(dir === 'desc' ? 'asc' : 'desc')}
+          className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100"
+        >
+          {sortLabel}
+        </button>
+        <div className="flex overflow-hidden rounded-md border border-gray-300">
+          <button
+            onClick={() => setDensityAndSave('comfortable')}
+            className={`px-2.5 py-1.5 text-xs font-medium ${
+              density === 'comfortable' ? 'bg-green-50 text-wa-dark' : 'text-gray-500 hover:bg-gray-100'
+            }`}
+          >
+            Comfortable
+          </button>
+          <button
+            onClick={() => setDensityAndSave('compact')}
+            className={`border-l border-gray-300 px-2.5 py-1.5 text-xs font-medium ${
+              density === 'compact' ? 'bg-green-50 text-wa-dark' : 'text-gray-500 hover:bg-gray-100'
+            }`}
+          >
+            Compact
+          </button>
+        </div>
+        <button
+          onClick={() => {
+            setSelecting(!selecting);
+            clearSelection();
+          }}
+          className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+            selecting ? 'border-wa bg-wa text-white' : 'border-gray-300 text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          {selecting ? 'Done' : 'Select'}
+        </button>
+      </div>
+      {selecting && selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-wa bg-green-50 px-3 py-2 text-xs font-medium text-wa-dark">
+          <span>{selected.size} selected</span>
+          <button onClick={selectAllVisible} className="underline hover:no-underline">
+            Select all {jobs.length}
+          </button>
+          {scope === 'scheduled' && (
+            <>
+              <button
+                onClick={() => bulkPause.mutate([...selected])}
+                disabled={bulkPause.isPending}
+                className="rounded border border-wa bg-white px-2 py-1 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+              >
+                ⏸ Pause selected
+              </button>
+              <button
+                onClick={() => bulkCancel.mutate([...selected])}
+                disabled={bulkCancel.isPending}
+                className="rounded border border-wa bg-white px-2 py-1 text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+              >
+                Cancel selected
+              </button>
+            </>
+          )}
+          {canClear !== false && (
+            <button
+              onClick={() => void confirmBulkDelete()}
+              disabled={bulkDelete.isPending}
+              className="rounded border border-red-300 bg-white px-2 py-1 text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              Delete selected
+            </button>
+          )}
+          <button onClick={clearSelection} className="ml-auto text-wa-dark underline hover:no-underline">
+            Clear
+          </button>
+        </div>
+      )}
+      {scope === 'history' && volumeBars.length > 0 && (
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 pb-1 pt-2">
+          <p className="mb-1.5 text-[11px] text-gray-400">Last 30 days · click a day to jump to it below</p>
+          <div className="flex h-10 items-end gap-0.5">
+            {volumeBars.map((b) => (
+              <button
+                key={b.day}
+                onClick={() => jumpToDay(b.day)}
+                title={`${b.count} job${b.count === 1 ? '' : 's'} · ${b.day}`}
+                style={{ height: `${Math.max(2, Math.round((b.count / volumeMax) * 40))}px` }}
+                className="min-w-[2px] flex-1 rounded-t bg-wa opacity-40 hover:opacity-80"
+              />
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap gap-1.5">
         <button
           onClick={() => setFilter('all')}
@@ -983,17 +1288,33 @@ export default function JobsPage({
           {totalAll === 0 ? copy.empty : `No ${filter} jobs.`}
         </div>
       )}
-      {jobs.map((j) => (
-        <JobRow
-          key={j.id}
-          job={j}
-          scope={scope}
-          names={names}
-          agents={agents}
-          onCompose={onCompose}
-          progress={progress[j.id]}
-          flash={flashJob === j.id}
-        />
+      {groups.map((g) => (
+        <div key={g.key} className="space-y-2">
+          <div className="sticky top-0 z-10 flex items-baseline justify-between bg-gray-50/95 px-1 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400 backdrop-blur-sm">
+            <span>{g.label}</span>
+            <span className="font-normal normal-case text-gray-400">
+              {g.jobs.length} job{g.jobs.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {g.jobs.map((j) => (
+              <JobRow
+                key={j.id}
+                job={j}
+                scope={scope}
+                names={names}
+                agents={agents}
+                onCompose={onCompose}
+                progress={progress[j.id]}
+                flash={flashJob === j.id}
+                density={density}
+                selecting={selecting}
+                selected={selected.has(j.id)}
+                onToggleSelect={() => toggleSelected(j.id)}
+              />
+            ))}
+          </div>
+        </div>
       ))}
       {pages.hasNextPage && (
         <button

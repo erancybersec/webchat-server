@@ -184,6 +184,12 @@ export interface JobPage {
   counts: Partial<Record<JobStatus, number>>;
 }
 
+/** One day's job count — feeds the History volume strip. */
+export interface JobVolumeDay {
+  day: string;
+  count: number;
+}
+
 export type SendStatus = 'pending' | 'sent' | 'skipped' | 'failed';
 
 /**

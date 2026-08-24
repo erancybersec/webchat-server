@@ -17,6 +17,7 @@ import type {
   JobScope,
   JobSend,
   JobStatus,
+  JobVolumeDay,
   ListMember,
   ListRecipe,
   MaintenanceReport,
@@ -192,6 +193,11 @@ export interface NotifyPrefs {
   keywords: string;
 }
 
+/** Per-person nav tab order (main bar vs. "More"), each agent sets their own. */
+export interface ToolbarPrefs {
+  order: string[];
+}
+
 export const api = {
   health: () => get<{ ok: boolean; mode: string; version: string }>('/api/health'),
 
@@ -213,6 +219,11 @@ export const api = {
     save: (patch: Partial<NotifyPrefs>) => put<NotifyPrefs>('/api/notify-prefs', patch),
   },
 
+  toolbarPrefs: {
+    get: () => get<ToolbarPrefs>('/api/toolbar-prefs'),
+    save: (order: string[]) => put<ToolbarPrefs>('/api/toolbar-prefs', { order }),
+  },
+
   push: {
     // endpoint targets this device exactly; the server falls back to the
     // caller's identity when it's absent.
@@ -222,10 +233,22 @@ export const api = {
 
   jobs: {
     list: () => iget<Job[]>('/api/jobs'),
-    page: (scope: JobScope, opts: { status?: JobStatus; limit?: number; offset?: number } = {}) => {
+    page: (
+      scope: JobScope,
+      opts: { status?: JobStatus; limit?: number; offset?: number; q?: string; sort?: 'asc' | 'desc' } = {},
+    ) => {
       const q = new URLSearchParams({ scope, limit: String(opts.limit ?? 50), offset: String(opts.offset ?? 0) });
       if (opts.status) q.set('status', opts.status);
+      if (opts.q?.trim()) q.set('q', opts.q.trim());
+      if (opts.sort) q.set('sort', opts.sort);
       return iget<JobPage>(`/api/jobs?${q}`);
+    },
+    // Job counts per day (History) for the volume-strip navigation aid.
+    // tz: minutes to add to UTC to reach the browser's local time, so "day"
+    // matches the same local day the list itself groups by.
+    volume: (days = 30) => {
+      const tz = -new Date().getTimezoneOffset();
+      return iget<JobVolumeDay[]>(`/api/jobs/volume?scope=history&days=${days}&tz=${tz}`);
     },
     get: (id: string) => get<Job>(`/api/jobs/${encodeURIComponent(id)}`),
     // New jobs are pinned to the active instance; edits keep the job's own
@@ -290,6 +313,8 @@ export const api = {
     remove: (id: string) => del<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(id)}`),
     clearDone: (scope?: JobScope) =>
       post<{ ok: boolean; removed: number }>('/api/jobs/clear-done', scope ? { scope } : {}),
+    bulkDelete: (ids: string[]) =>
+      post<{ ok: boolean; removed: number }>('/api/jobs/bulk-delete', { ids }),
   },
 
   lists: {

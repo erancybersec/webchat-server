@@ -187,9 +187,24 @@ export function registerJobs(
         status: q.status as JobStatus | undefined,
         limit: Math.min(Math.max(1, Number(q.limit) || 50), 200),
         offset: Math.max(0, Number(q.offset) || 0),
+        q: q.q,
+        dir: q.sort === 'asc' ? 'asc' : 'desc',
       },
       instanceFilter(q),
     );
+  });
+
+  // Job counts per day (History only) for the volume-strip navigation aid.
+  // ?tz = minutes to add to UTC to reach the viewer's local time (i.e.
+  // -Date().getTimezoneOffset()), so "day" matches the same local day the
+  // list itself groups by.
+  app.get('/api/jobs/volume', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    if (q.scope && q.scope !== 'history')
+      return reply.code(400).send({ error: 'scope must be history' });
+    const days = Math.min(Math.max(1, Number(q.days) || 30), 90);
+    const tz = Math.min(Math.max(-720, Number(q.tz) || 0), 840);
+    return jobs.volumePerDay(days, tz, instanceFilter(q));
   });
 
   app.get('/api/jobs/:id', async (req, reply) => {
@@ -563,6 +578,16 @@ export function registerJobs(
     if (scope != null && !SCOPES.includes(scope as JobScope))
       return reply.code(400).send({ error: `scope must be one of: ${SCOPES.join(', ')}` });
     return { ok: true, removed: jobs.clearDone(scope as JobScope | undefined) };
+  });
+
+  // Bulk-deleting a chosen set of jobs is the same irreversible action as
+  // clear-done, just id-scoped instead of status-scoped — same permission bar.
+  app.post('/api/jobs/bulk-delete', { preHandler: requireClear }, async (req, reply) => {
+    const ids = ((req.body ?? {}) as { ids?: unknown }).ids;
+    if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string'))
+      return reply.code(400).send({ error: 'ids must be a non-empty array of strings' });
+    if (ids.length > 500) return reply.code(400).send({ error: 'ids: at most 500 at a time' });
+    return { ok: true, removed: jobs.deleteMany(ids as string[]) };
   });
 
   // Approval queue actions — holders of jobs.approve only.

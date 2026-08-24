@@ -60,7 +60,7 @@ describe('job history & pagination', () => {
     expect(ids.size).toBe(70);
   });
 
-  it('pages the scheduled queue soonest-first and filters by status', async () => {
+  it('pages the scheduled queue furthest-first and filters by status', async () => {
     for (let i = 0; i < 110; i++) {
       t.jobs.upsert({
         id: `p_${i}`,
@@ -75,7 +75,7 @@ describe('job history & pagination', () => {
     ).json();
     expect(page.total).toBe(113);
     expect(page.counts).toEqual({ pending: 110, cancelled: 3 });
-    expect(page.jobs[0].id).toBe('p_109'); // soonest scheduled first
+    expect(page.jobs[0].id).toBe('p_0'); // furthest scheduled first (largest offset)
 
     const cancelled = (
       await t.app.inject({ method: 'GET', url: '/api/jobs?scope=scheduled&status=cancelled' })

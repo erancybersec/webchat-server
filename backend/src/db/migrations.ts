@@ -555,4 +555,13 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE jobs ADD COLUMN hold_reason TEXT;
     `,
   },
+  {
+    id: '022-toolbar-prefs',
+    sql: `
+      CREATE TABLE toolbar_prefs (
+        agent_email TEXT PRIMARY KEY,
+        tab_order   TEXT NOT NULL DEFAULT ''
+      );
+    `,
+  },
 ];

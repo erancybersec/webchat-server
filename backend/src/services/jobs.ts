@@ -112,6 +112,12 @@ export interface InstanceFilter {
 }
 const NO_FILTER: InstanceFilter = { eff: '', def: '' };
 
+// Search across a job's recipients (id + display name) and message content —
+// both are JSON blobs, so a plain substring match (no digit-stripping, unlike
+// job_sends' normalized-phone search) covers a phone or a name either way.
+// @q IS NULL short-circuits when no search term was given.
+const JOB_TEXT_MATCH = `(@q IS NULL OR recipients LIKE '%'||@q||'%' OR items LIKE '%'||@q||'%')`;
+
 interface JobRow {
   id: string;
   scheduled_at: string;
@@ -234,20 +240,44 @@ export class JobStore {
           repeat=excluded.repeat, instance=excluded.instance, batch=excluded.batch,
           sent_by=COALESCE(jobs.sent_by, excluded.sent_by)`),
       all: db.prepare(`SELECT * FROM jobs WHERE ${INSTANCE_SCOPE} ORDER BY created_at DESC`),
-      // soonest-first for the queue, newest-first for the record
-      pageScheduled: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
+      // newest-first (and an ascending counterpart) for both the queue and the
+      // record; @q matches recipient/message text — same "JSON blob, plain
+      // LIKE" idiom as sendsPage's recipient search below
+      pageScheduledDesc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
         AND ${INSTANCE_SCOPE}
         AND (@status IS NULL OR status=@status)
-        ORDER BY scheduled_at ASC, created_at DESC LIMIT @limit OFFSET @offset`),
-      pageHistory: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
-        AND ${INSTANCE_SCOPE}
-        AND (@status IS NULL OR status=@status)
+        AND ${JOB_TEXT_MATCH}
         ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
+      pageScheduledAsc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
+        AND ${INSTANCE_SCOPE}
+        AND (@status IS NULL OR status=@status)
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
+      pageHistoryDesc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
+        AND ${INSTANCE_SCOPE}
+        AND (@status IS NULL OR status=@status)
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
+      pageHistoryAsc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
+        AND ${INSTANCE_SCOPE}
+        AND (@status IS NULL OR status=@status)
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
       countScheduled: db.prepare(
-        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${SCHEDULED_SCOPE} AND ${INSTANCE_SCOPE} GROUP BY status`,
+        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${SCHEDULED_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} GROUP BY status`,
       ),
       countHistory: db.prepare(
-        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} GROUP BY status`,
+        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} GROUP BY status`,
+      ),
+      // @tzMod shifts scheduled_at (stored UTC) to the viewer's local time
+      // before taking the date, e.g. '180 minutes' for UTC+3 — otherwise a
+      // late-evening local job buckets under the wrong day, silently
+      // breaking the volume strip's "click a day, jump to it" in any
+      // non-UTC timezone (which is every real deployment of this app).
+      volumePerDay: db.prepare(
+        `SELECT date(datetime(scheduled_at, @tzMod)) AS day, COUNT(*) AS n FROM jobs
+         WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} AND date(datetime(scheduled_at, @tzMod)) >= @cutoff
+         GROUP BY day ORDER BY day`,
       ),
       byId: db.prepare(`SELECT * FROM jobs WHERE id=?`),
       due: db.prepare(
@@ -471,14 +501,18 @@ export class JobStore {
    */
   page(
     scope: JobScope,
-    opts: { status?: JobStatus; limit: number; offset: number },
+    opts: { status?: JobStatus; limit: number; offset: number; q?: string; dir?: 'asc' | 'desc' },
     filter: InstanceFilter = NO_FILTER,
   ): JobPage {
-    const pageQ = scope === 'history' ? this.q.pageHistory : this.q.pageScheduled;
+    const asc = opts.dir === 'asc';
+    const pageQ = scope === 'history'
+      ? (asc ? this.q.pageHistoryAsc : this.q.pageHistoryDesc)
+      : (asc ? this.q.pageScheduledAsc : this.q.pageScheduledDesc);
     const countQ = scope === 'history' ? this.q.countHistory : this.q.countScheduled;
+    const q = opts.q?.trim() || null;
     const counts: JobPage['counts'] = {};
     let totalAll = 0;
-    for (const r of countQ.all(filter) as Array<{ status: JobStatus; n: number }>) {
+    for (const r of countQ.all({ ...filter, q }) as Array<{ status: JobStatus; n: number }>) {
       counts[r.status] = r.n;
       totalAll += r.n;
     }
@@ -486,6 +520,7 @@ export class JobStore {
       eff: filter.eff,
       def: filter.def,
       status: opts.status ?? null,
+      q,
       limit: opts.limit,
       offset: opts.offset,
     }) as JobRow[];
@@ -494,6 +529,25 @@ export class JobStore {
       total: opts.status ? (counts[opts.status] ?? 0) : totalAll,
       counts,
     };
+  }
+
+  /** Job counts per calendar day (History scope) over the last `days` days —
+   * feeds the History volume strip. Bucketed by `scheduled_at` shifted into
+   * the viewer's local day (via `tzMinutes`, minutes to ADD to UTC), the
+   * same field and the same local day the list itself sorts/groups by. */
+  volumePerDay(
+    days: number,
+    tzMinutes: number,
+    filter: InstanceFilter = NO_FILTER,
+  ): Array<{ day: string; count: number }> {
+    const tzMod = `${tzMinutes} minutes`;
+    const localNow = Date.now() + tzMinutes * 60_000;
+    const cutoff = new Date(localNow - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const rows = this.q.volumePerDay.all({ eff: filter.eff, def: filter.def, tzMod, cutoff }) as Array<{
+      day: string;
+      n: number;
+    }>;
+    return rows.map((r) => ({ day: r.day, count: r.n }));
   }
 
   byId(id: string): Job | null {
@@ -578,6 +632,17 @@ export class JobStore {
 
   delete(id: string): void {
     this.q.del.run(id);
+  }
+
+  /** Bulk-delete a specific set of jobs (the id-scoped counterpart to
+   * clearDone's status-scoped bulk delete) — same irreversibility, so callers
+   * must gate this behind the same permission as clear-done. */
+  deleteMany(ids: string[]): number {
+    return this.db.transaction((list: string[]) => {
+      let n = 0;
+      for (const id of list) n += this.q.del.run(id).changes;
+      return n;
+    })(ids);
   }
 
   clearDone(scope?: JobScope): number {

@@ -16,6 +16,7 @@ import { registerMaintenance } from './routes/maintenance.js';
 import { registerProfile } from './routes/profile.js';
 import { registerMeta } from './routes/meta.js';
 import { registerPush } from './routes/push.js';
+import { registerToolbarPrefs } from './routes/toolbarPrefs.js';
 import { registerQuickReplies } from './routes/quickreplies.js';
 import { registerReminders } from './routes/reminders.js';
 import { registerSending } from './routes/sending.js';
@@ -48,6 +49,7 @@ import { attachMessageStats, MessageStatsStore } from './services/msgstats.js';
 import { OptOutListener } from './services/optout.js';
 import { AgentPresence } from './services/presence.js';
 import { NotifyPrefsStore } from './services/notifyprefs.js';
+import { ToolbarPrefsStore } from './services/toolbarPrefs.js';
 import { attachJobNotifier, attachPushNotifier, PushService } from './services/push.js';
 import { QuickRepliesStore } from './services/quickreplies.js';
 import { RemindersStore } from './services/reminders.js';
@@ -217,6 +219,8 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   // Per-person notification preferences (group/DM mutes, quiet hours, keyword
   // alerts, job-ended) layered on top of the global notifyInstances allowlist.
   const notifyPrefs = new NotifyPrefsStore(db);
+  // Per-agent nav tab order (which tabs sit in the main bar vs. "More").
+  const toolbarPrefs = new ToolbarPrefsStore(db);
   attachPushNotifier(
     relay,
     push,
@@ -280,6 +284,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   registerChats(app, { cfg, meta: chatMeta, agents, presence, emit });
   registerReminders(app, { cfg, agents, reminders });
   registerPush(app, { cfg, push, prefs: notifyPrefs });
+  registerToolbarPrefs(app, { cfg, prefs: toolbarPrefs });
   registerInstances(app, { cfg, agents, access: instanceAccess, instances: instancesService });
   registerMaintenance(app, {
     cfg,

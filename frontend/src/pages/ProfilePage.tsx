@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import { useConfirm } from '../components/Confirm';
 import { NotificationPrefsCard } from '../components/NotificationPrefsCard';
+import { ToolbarPrefsCard } from '../components/ToolbarPrefsCard';
 import { useToast } from '../components/Toast';
 import { api } from '../lib/api';
 import { fileToBase64 } from '../lib/voice';
@@ -110,6 +111,8 @@ export default function ProfilePage() {
       </div>
 
       <NotificationPrefsCard />
+
+      <ToolbarPrefsCard />
 
       <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-800">Update Display Name</h3>
