@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useToast } from '../components/Toast';
 import { NotificationPrefsCard } from '../components/NotificationPrefsCard';
 import { Switch } from '../components/Switch';
+import { ToolbarPrefsCard } from '../components/ToolbarPrefsCard';
 import { AGENT_COLOR_KEYS, agentBadgeClass, agentLabel, useAgents } from '../lib/agents';
 import { api } from '../lib/api';
 import { useInstances } from '../lib/instance';
@@ -909,6 +910,8 @@ export default function SettingsPage() {
       <MaintenanceCard />
 
       <NotificationPrefsCard />
+
+      <ToolbarPrefsCard />
 
       {(instancesList.data?.instances?.length ?? 0) >= 1 && (
         <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
