@@ -22,6 +22,7 @@ export const DEFAULT_TOOLBAR_ORDER = [
   'history',
   'blacklist',
   'profile',
+  'preferences',
   'insights',
 ];
 

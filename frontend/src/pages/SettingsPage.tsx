@@ -1,9 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useToast } from '../components/Toast';
-import { NotificationPrefsCard } from '../components/NotificationPrefsCard';
 import { Switch } from '../components/Switch';
-import { ToolbarPrefsCard } from '../components/ToolbarPrefsCard';
 import { AGENT_COLOR_KEYS, agentBadgeClass, agentLabel, useAgents } from '../lib/agents';
 import { api } from '../lib/api';
 import { useInstances } from '../lib/instance';
@@ -209,7 +207,6 @@ const NAV_ITEMS: Array<{ id: string; label: string }> = [
   { id: 'retention', label: 'Data retention' },
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'notifications', label: 'Notifications' },
-  { id: 'toolbar', label: 'Toolbar order' },
 ];
 
 function NavIcon({ id }: { id: string }) {
@@ -231,8 +228,6 @@ function NavIcon({ id }: { id: string }) {
       return <svg {...p}><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 1 5.4-5.4l-2.3 2.3-2-2 2.3-2.3Z" /></svg>;
     case 'notifications':
       return <svg {...p}><path d="M6 10a6 6 0 1 1 12 0c0 4 1.3 5.5 1.3 5.5H4.7S6 14 6 10Z" /><path d="M10 18.5a2 2 0 0 0 4 0" /></svg>;
-    case 'toolbar':
-      return <svg {...p}><path d="M4 7h16M4 12h16M4 17h16" /><circle cx="9" cy="7" r="1.6" fill="currentColor" stroke="none" /><circle cx="16" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="10" cy="17" r="1.6" fill="currentColor" stroke="none" /></svg>;
     default:
       return null;
   }
@@ -1022,10 +1017,7 @@ export default function SettingsPage() {
       {activeSection === 'maintenance' && <MaintenanceCard />}
 
       {activeSection === 'notifications' && (
-      <div className="space-y-5">
-        <NotificationPrefsCard />
-
-        {(instancesList.data?.instances?.length ?? 0) >= 1 && (
+        (instancesList.data?.instances?.length ?? 0) >= 1 ? (
           <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
             <h3 className="text-sm font-semibold text-gray-700">Channels that notify</h3>
             <div>
@@ -1068,11 +1060,12 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-        )}
-      </div>
+        ) : (
+          <p className="rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-400 shadow-sm">
+            No WhatsApp channels available right now.
+          </p>
+        )
       )}
-
-      {activeSection === 'toolbar' && <ToolbarPrefsCard />}
 
       {feedback && (
         <div

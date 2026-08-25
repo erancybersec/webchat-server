@@ -17,6 +17,7 @@ import GroupsPage from './pages/GroupsPage';
 import InsightsPage from './pages/InsightsPage';
 import JobsPage from './pages/JobsPage';
 import ListsPage from './pages/ListsPage';
+import PreferencesPage from './pages/PreferencesPage';
 import ProfilePage from './pages/ProfilePage';
 import QuickRepliesPage from './pages/QuickRepliesPage';
 import SettingsPage from './pages/SettingsPage';
@@ -524,6 +525,7 @@ function App() {
           />
           <Route path="/blacklist" element={<BlacklistPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/preferences" element={<PreferencesPage />} />
           <Route path="/settings" element={guard('settings', <SettingsPage />)} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>
