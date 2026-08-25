@@ -233,9 +233,10 @@ function ItemEditor({ item, onChange }: ItemEditorProps) {
             placeholder="…or media URL"
             className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           />
-          <input
+          <textarea
             value={d.caption ?? ''}
             onChange={(e) => set({ caption: e.target.value })}
+            rows={2}
             placeholder="Caption (optional)"
             dir="auto"
             className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
