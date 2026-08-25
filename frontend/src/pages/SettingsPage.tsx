@@ -238,65 +238,61 @@ function NavIcon({ id }: { id: string }) {
   }
 }
 
-/** Sticky, scroll-spied jump list for the (long) settings page. Hidden on
- * narrow screens — mobile just gets the plain stacked scroll. */
-function SettingsNav() {
-  const [active, setActive] = useState('connection');
+/** Section switcher: a sticky vertical list on wide screens, a horizontal
+ * chip strip on narrow ones. Picking a section swaps the content pane below
+ * it in place — nothing to scroll through to get back to the nav. */
+function SettingsNav({ active, onSelect }: { active: string; onSelect: (id: string) => void }) {
   const [query, setQuery] = useState('');
-
-  useEffect(() => {
-    const els = NAV_ITEMS.map((i) => document.getElementById(i.id)).filter(
-      (el): el is HTMLElement => el !== null,
-    );
-    if (!els.length) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) setActive(entry.target.id);
-        }
-      },
-      { rootMargin: '-15% 0px -70% 0px', threshold: 0 },
-    );
-    els.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, []);
-
-  function go(id: string) {
-    setActive(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
   const q = query.trim().toLowerCase();
   const items = NAV_ITEMS.filter((i) => !q || i.label.toLowerCase().includes(q));
 
   return (
-    <div className="sticky top-4 hidden w-52 flex-none rounded-xl border border-gray-200 bg-white p-3.5 shadow-sm lg:block">
-      <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Jump to</p>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Filter sections…"
-        aria-label="Filter settings sections"
-        className="mb-2 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs"
-      />
-      <div className="flex flex-col">
-        {items.map((i) => (
+    <>
+      <div className="sticky top-4 hidden w-52 flex-none rounded-xl border border-gray-200 bg-white p-3.5 shadow-sm lg:block">
+        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Jump to</p>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter sections…"
+          aria-label="Filter settings sections"
+          className="mb-2 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs"
+        />
+        <div className="flex flex-col">
+          {items.map((i) => (
+            <button
+              key={i.id}
+              onClick={() => onSelect(i.id)}
+              className={`flex items-center gap-2.5 rounded-md border-l-[3px] px-2 py-1.5 text-left text-[13px] ${
+                active === i.id
+                  ? 'border-wa bg-green-50 font-medium text-wa-dark'
+                  : 'border-transparent text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <NavIcon id={i.id} />
+              {i.label}
+            </button>
+          ))}
+          {items.length === 0 && <p className="px-2 py-1.5 text-xs text-gray-400">No matching section</p>}
+        </div>
+      </div>
+
+      <div className="flex w-full gap-2 overflow-x-auto rounded-xl border border-gray-200 bg-white p-2 shadow-sm lg:hidden">
+        {NAV_ITEMS.map((i) => (
           <button
             key={i.id}
-            onClick={() => go(i.id)}
-            className={`flex items-center gap-2.5 rounded-md border-l-[3px] px-2 py-1.5 text-left text-[13px] ${
+            onClick={() => onSelect(i.id)}
+            className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs ${
               active === i.id
                 ? 'border-wa bg-green-50 font-medium text-wa-dark'
-                : 'border-transparent text-gray-600 hover:bg-gray-50'
+                : 'border-gray-200 text-gray-600'
             }`}
           >
             <NavIcon id={i.id} />
             {i.label}
           </button>
         ))}
-        {items.length === 0 && <p className="px-2 py-1.5 text-xs text-gray-400">No matching section</p>}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -488,6 +484,7 @@ export default function SettingsPage() {
   // Evolution lines that fire push notifications ([] = default line only).
   const [notifyInstances, setNotifyInstances] = useState<string[]>([]);
   const instancesList = useInstances();
+  const [activeSection, setActiveSection] = useState('connection');
 
   // live connection status banner — tests the saved server-side settings
   const conn = useQuery({
@@ -625,8 +622,8 @@ export default function SettingsPage() {
     : 'Evolution API key';
 
   return (
-    <div className="mx-auto flex max-w-5xl items-start gap-6 overflow-y-auto p-4">
-      <SettingsNav />
+    <div className="mx-auto flex max-w-5xl flex-col items-start gap-6 overflow-y-auto p-4 lg:flex-row">
+      <SettingsNav active={activeSection} onSelect={setActiveSection} />
       <div className="max-w-2xl flex-1 space-y-5">
       <div>
         <h2 className="text-lg font-semibold text-gray-800">Settings</h2>
@@ -663,7 +660,8 @@ export default function SettingsPage() {
               : `Not connected${conn.data?.error ? ` — ${conn.data.error}` : ''}`}
       </div>
 
-      <div id="connection" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'connection' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Evolution API connection</h3>
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">Server URL</label>
@@ -724,8 +722,10 @@ export default function SettingsPage() {
           Test connection
         </button>
       </div>
+      )}
 
-      <div id="sending" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'sending' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Sending</h3>
         <p className="text-xs text-gray-500">
           Random delay between messages in scheduled/bulk sends — mimics human pacing.
@@ -755,8 +755,10 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      )}
 
-      <div id="safety" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'safety' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Send safety</h3>
         <p className="text-xs text-gray-500">
           What keeps this number from being reported and banned: how many strangers it may reach in
@@ -897,8 +899,10 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      )}
 
-      <div id="scheduling" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'scheduling' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Scheduling</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -945,8 +949,10 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
+      )}
 
-      <div id="agents" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'agents' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Agents</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -983,8 +989,10 @@ export default function SettingsPage() {
         )}
         {agentsOn && <AgentsTable />}
       </div>
+      )}
 
-      <div id="retention" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      {activeSection === 'retention' && (
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Data retention</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -1009,12 +1017,12 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      )}
 
-      <div id="maintenance" className="scroll-mt-4">
-        <MaintenanceCard />
-      </div>
+      {activeSection === 'maintenance' && <MaintenanceCard />}
 
-      <div id="notifications" className="scroll-mt-4 space-y-5">
+      {activeSection === 'notifications' && (
+      <div className="space-y-5">
         <NotificationPrefsCard />
 
         {(instancesList.data?.instances?.length ?? 0) >= 1 && (
@@ -1062,10 +1070,9 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+      )}
 
-      <div id="toolbar" className="scroll-mt-4">
-        <ToolbarPrefsCard />
-      </div>
+      {activeSection === 'toolbar' && <ToolbarPrefsCard />}
 
       {feedback && (
         <div
