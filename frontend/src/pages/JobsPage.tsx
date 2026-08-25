@@ -1122,6 +1122,11 @@ export default function JobsPage({
         })
       : [];
   const volumeMax = Math.max(1, ...volumeBars.map((b) => b.count));
+  const todayKey = localDayKey(today);
+  const formatDayLabel = (day: string) => {
+    const [y, m, d] = day.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
   function jumpToDay(day: string) {
     const target = jobs.find((j) => localDayKey(new Date(j.scheduledAt)) === day);
     if (!target) return;
@@ -1130,6 +1135,25 @@ export default function JobsPage({
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     setFlashJob(target.id);
   }
+  // Same day buckets as groupJobsByDay's past-side labels (Today/Yesterday/
+  // This week/Last week), so a chip jumps into the exact row-group it names.
+  // Scans from the most recent day in the bucket backward so the jump lands
+  // on the freshest match.
+  function firstDayInRange(minDiff: number, maxDiff: number): string | undefined {
+    for (let diff = maxDiff; diff >= minDiff; diff--) {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + diff);
+      const key = localDayKey(d);
+      if ((volumeByDay.get(key) ?? 0) > 0) return key;
+    }
+    return undefined;
+  }
+  const quickRanges = [
+    { label: 'Today', min: 0, max: 0 },
+    { label: 'Yesterday', min: -1, max: -1 },
+    { label: 'This week', min: -6, max: -2 },
+    { label: 'Last week', min: -13, max: -7 },
+    { label: 'Earlier', min: -29, max: -14 },
+  ] as const;
 
   const sortLabel =
     scope === 'history'
@@ -1241,18 +1265,44 @@ export default function JobsPage({
         </div>
       )}
       {scope === 'history' && volumeBars.length > 0 && (
-        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 pb-1 pt-2">
-          <p className="mb-1.5 text-[11px] text-gray-400">Last 30 days · click a day to jump to it below</p>
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 pb-2 pt-2">
+          <p className="mb-1.5 text-[11px] text-gray-400">Daily send volume · click a bar or a range to jump to it</p>
           <div className="flex h-10 items-end gap-0.5">
-            {volumeBars.map((b) => (
-              <button
-                key={b.day}
-                onClick={() => jumpToDay(b.day)}
-                title={`${b.count} job${b.count === 1 ? '' : 's'} · ${b.day}`}
-                style={{ height: `${Math.max(2, Math.round((b.count / volumeMax) * 40))}px` }}
-                className="min-w-[2px] flex-1 rounded-t bg-wa opacity-40 hover:opacity-80"
-              />
-            ))}
+            {volumeBars.map((b) => {
+              const isToday = b.day === todayKey;
+              return (
+                <button
+                  key={b.day}
+                  onClick={() => jumpToDay(b.day)}
+                  title={`${b.count} job${b.count === 1 ? '' : 's'} · ${isToday ? 'Today' : formatDayLabel(b.day)}`}
+                  style={{ height: `${Math.max(2, Math.round((b.count / volumeMax) * 40))}px` }}
+                  className={`min-w-[2px] flex-1 rounded-t ${
+                    isToday
+                      ? 'bg-wa-dark opacity-90 ring-1 ring-wa-dark hover:opacity-100'
+                      : 'bg-wa opacity-40 hover:opacity-80'
+                  }`}
+                />
+              );
+            })}
+          </div>
+          <div className="mt-1 flex justify-between text-[10px] text-gray-400">
+            <span>{formatDayLabel(volumeBars[0].day)}</span>
+            <span className="font-medium text-gray-500">Today</span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {quickRanges.map((r) => {
+              const day = firstDayInRange(r.min, r.max);
+              return (
+                <button
+                  key={r.label}
+                  disabled={!day}
+                  onClick={() => day && jumpToDay(day)}
+                  className="rounded-full border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  {r.label}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
