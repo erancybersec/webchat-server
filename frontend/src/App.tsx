@@ -363,7 +363,7 @@ function App() {
     <div className="flex h-dvh flex-col bg-gray-50 text-gray-900">
       {/* desktop-only: on mobile the top tab bar replaces this whole lane */}
       <header className="flex items-center gap-2 border-b border-gray-200 bg-white px-3 py-2 shadow-sm max-md:hidden md:gap-4">
-        <h1 className="shrink-0 text-lg font-bold text-wa-dark">WhatsApp Manager</h1>
+        <MoreMenu variant="mobile" tabs={moreTabs} activeId={tab} />
         <nav className="flex gap-1 max-md:hidden" aria-label="Main">
           {primaryTabs.map((t) => (
             <Link
@@ -386,7 +386,6 @@ function App() {
               )}
             </Link>
           ))}
-          <MoreMenu variant="desktop" tabs={moreTabs} activeId={tab} />
         </nav>
         <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-gray-400">
           <InstanceSwitcher />

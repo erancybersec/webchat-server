@@ -25,7 +25,13 @@ export interface SendingLimits {
       enabled: boolean;
     };
   };
-  familiarity: { count(instance: string): number };
+  familiarity: {
+    count(instance: string): number;
+    split(
+      recipients: readonly unknown[],
+      instance: string,
+    ): { known: string[]; cold: string[]; groups: string[] };
+  };
 }
 
 export function registerMeta(app: FastifyInstance, cfg: Config, limits?: SendingLimits): void {
@@ -67,5 +73,21 @@ export function registerMeta(app: FastifyInstance, cfg: Config, limits?: Sending
           dailyCap: cfg.verifyDailyCap,
         },
       };
+    });
+
+  // Pre-flight classification of a candidate recipient list: how many have
+  // never exchanged a message on this line (cold), how many already have a
+  // thread (known), and how many are groups (never capped). Lets Compose show
+  // a real count before send instead of only warning once the list is bigger
+  // than the whole remaining ration.
+  if (limits)
+    app.post('/api/sending-limits/classify', async (req, reply) => {
+      const body = req.body as { recipients?: unknown; instance?: string } | undefined;
+      if (!Array.isArray(body?.recipients))
+        return reply.code(400).send({ error: 'recipients required: string[]' });
+      const q = (req.query as { instance?: string } | undefined)?.instance;
+      const instance = (typeof q === 'string' && q.trim()) || body.instance || cfg.evo.instance;
+      const { known, cold, groups } = limits.familiarity.split(body.recipients, instance);
+      return { instance, known: known.length, cold: cold.length, groups: groups.length };
     });
 }

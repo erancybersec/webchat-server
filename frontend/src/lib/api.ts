@@ -177,6 +177,14 @@ export interface SendingLimits {
   };
 }
 
+/** How a candidate recipient list splits by familiarity, before send. */
+export interface RecipientClassification {
+  instance: string;
+  known: number;
+  cold: number;
+  groups: number;
+}
+
 export type SettingsPatch = Partial<
   Omit<ServerSettings, 'apikeySet' | 'apikeyHint' | 'timezone' | 'serverTime'> & { apikey: string }
 >;
@@ -203,6 +211,10 @@ export const api = {
 
   // Per-line, so the header switcher's channel is the one being reported on.
   sendingLimits: () => iget<SendingLimits>('/api/sending-limits'),
+  classifyRecipients: (recipients: Recipient[]) =>
+    ipost<RecipientClassification>('/api/sending-limits/classify', {
+      recipients: recipients.map((r) => r.id),
+    }),
 
   settings: {
     get: () => get<ServerSettings>('/api/settings'),

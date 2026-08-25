@@ -1039,12 +1039,14 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
   }
 
   function editMessage(msg: ChatMsg, next: string) {
+    // A media message's editable content is its caption, not its (empty) text.
+    const isCaption = msg.type !== 'text' && msg.hasMedia;
     api.messages
       .edit(msg.remoteJid || jid, msg.id, next)
       .then(() => {
-        // Optimistic: show the new text + Edited tag immediately. Evolution
-        // applies the edit to its DB via an async upsert event, so an instant
-        // refetch can race and return the old text — the 25s poll reconciles.
+        // Optimistic: show the new text/caption + Edited tag immediately.
+        // Evolution applies the edit to its DB via an async upsert event, so an
+        // instant refetch can race and return the old value — the 25s poll reconciles.
         qc.setQueriesData({ queryKey: ['messages', jid] }, (old: unknown) => {
           const data = old as { records: ChatMsg[]; hasMore: boolean } | undefined;
           if (!data?.records) return old;
@@ -1054,10 +1056,10 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
               r.id === msg.id
                 ? {
                     ...r,
-                    text: next,
+                    ...(isCaption ? { caption: next } : { text: next }),
                     edited: true,
-                    // preserve the pre-edit text so the history is clickable here too
-                    editHistory: [...r.editHistory, r.text].filter(Boolean),
+                    // preserve the pre-edit value so the history is clickable here too
+                    editHistory: [...r.editHistory, isCaption ? r.caption : r.text].filter(Boolean),
                   }
                 : r,
             ),

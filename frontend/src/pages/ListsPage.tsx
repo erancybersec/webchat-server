@@ -263,6 +263,7 @@ function ListEditor({
   onSaved: () => void;
 }) {
   const flash = useToast();
+  const confirmDlg = useConfirm();
   const [name, setName] = useState(list?.name ?? '');
   const [mode, setMode] = useState<EditorMode>(list?.recipe ? 'combine' : 'paste');
   const [members, setMembers] = useState<ListMember[]>([]);
@@ -271,7 +272,9 @@ function ListEditor({
   // Off = freeze: save the members this recipe produced as a plain list.
   const [keepRecipe, setKeepRecipe] = useState(true);
   const [pick, setPick] = useState('');
-  const [showPreview, setShowPreview] = useState(false);
+  // Shown by default — paste mode always shows its members below the textarea,
+  // so combine mode shouldn't hide its result behind an extra click either.
+  const [showPreview, setShowPreview] = useState(true);
   const [loading, setLoading] = useState(!!list);
   const [busy, setBusy] = useState(false);
 
@@ -367,6 +370,14 @@ function ListEditor({
 
   async function save() {
     if (!name.trim()) return flash('List name is required', 'err');
+    if (mode === 'paste' && paste.trim()) {
+      const ok = await confirmDlg({
+        title: 'Unadded pasted numbers',
+        body: 'There are numbers in the paste box that haven’t been added to the list yet — they will be left out unless you click "Add numbers" first. Save without them?',
+        confirmLabel: 'Save without them',
+      });
+      if (!ok) return;
+    }
     if (mode === 'combine') {
       if (recipeIsEmpty(recipe)) return flash('Include at least one list', 'err');
       if (sourcesLoading) return flash('Still loading the source lists', 'err');
@@ -457,7 +468,7 @@ function ListEditor({
                   disabled={!paste.trim()}
                   className="mt-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
                 >
-                  Add pasted numbers
+                  Add numbers
                 </button>
               </div>
               {loading ? (

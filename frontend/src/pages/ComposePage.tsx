@@ -8,7 +8,7 @@ import { batchSummary, clockLabel, coldCapCaveat, estimateFinish } from '../lib/
 import { clearComposeDraft, peekComposeDraft } from '../lib/composeDraft';
 import { useJobSend } from '../lib/useJobSend';
 import { useNeedsApproval } from '../lib/workbench';
-import type { BatchRule, JobItem, Recipient, RepeatFreq } from '../types';
+import type { BatchRule, Job, JobItem, Recipient, RepeatFreq } from '../types';
 
 const REPEAT_OPTIONS: Array<{ value: RepeatFreq | ''; label: string }> = [
   { value: '', label: 'No repeat' },
@@ -81,11 +81,17 @@ export default function ComposePage() {
   const ready = recipients.length > 0 && items.length > 0 && itemErrors.every((e) => !e);
 
   const { needed: willNeedApproval } = useNeedsApproval(recipients.length);
-  // Today's first-contact ration. We don't know here WHICH of these recipients
-  // are strangers (the server classifies at send time), so the hint only fires
-  // when the list is bigger than the whole remaining allowance — at which point
-  // it is certain the send spills into tomorrow whoever is on it.
   const limits = useQuery({ queryKey: ['sending-limits'], queryFn: api.sendingLimits, staleTime: 30_000 });
+  // How many of the current chips are strangers to this line vs. already in a
+  // conversation, so the ration hint below can use a real count instead of
+  // assuming worst case.
+  const classification = useQuery({
+    queryKey: ['classify-recipients', recipients.map((r) => r.id).join(',')],
+    queryFn: () => api.classifyRecipients(recipients),
+    enabled: recipients.length > 0,
+    staleTime: 15_000,
+  });
+  const coldCount = classification.data?.cold ?? null;
   // an active override governs this send instead of the line's fetched ration
   const coldCapDailyNum = Math.max(1, Math.round(Number(coldCapDaily) || 1));
   const coldLeft = coldCapOn
@@ -93,7 +99,7 @@ export default function ComposePage() {
     : limits.data?.coldContacts.enabled
       ? limits.data.coldContacts.remaining
       : null;
-  const overRation = coldLeft != null && recipients.length > coldLeft;
+  const overRation = coldLeft != null && (coldCount ?? recipients.length) > coldLeft;
   const coldCaveat = limits.data
     ? coldCapCaveat(
         recipients.length,
@@ -156,7 +162,8 @@ export default function ComposePage() {
     }
   }
 
-  async function schedule() {
+  /** @returns the saved job, or null if the save failed (feedback already set). */
+  async function schedule(): Promise<Job | null> {
     setFeedback('');
     setProgress(null);
     try {
@@ -190,6 +197,21 @@ export default function ComposePage() {
               : `Scheduled for ${new Date(when).toLocaleString()} → Scheduled tab`,
       );
       setShowSchedule(false);
+      qc.invalidateQueries({ queryKey: ['jobs'] });
+      return saved;
+    } catch (e) {
+      setFeedback(String((e as Error).message));
+      return null;
+    }
+  }
+
+  /** Save the paused campaign's edits, then pick it back up right away. */
+  async function saveAndContinue() {
+    const saved = await schedule();
+    if (!saved || saved.status === 'pending_approval') return;
+    try {
+      await api.jobs.resume(saved.id);
+      setFeedback('Saved — continuing the campaign now.');
       qc.invalidateQueries({ queryKey: ['jobs'] });
     } catch (e) {
       setFeedback(String((e as Error).message));
@@ -230,6 +252,13 @@ export default function ComposePage() {
             Recipient(s) <span className="text-red-400">*</span>
           </label>
           <RecipientChips value={recipients} onChange={setRecipients} />
+          {classification.data && (
+            <p className="mt-1.5 text-xs text-gray-500">
+              <b>{classification.data.cold}</b> never contacted this line before,{' '}
+              <b>{classification.data.known}</b> already in a conversation
+              {classification.data.groups > 0 ? `, ${classification.data.groups} group(s)` : ''}.
+            </p>
+          )}
         </div>
 
         {overRation && (
@@ -251,13 +280,23 @@ export default function ComposePage() {
         {/* A paused campaign is saved, never re-sent from here: "Send" would
             create a brand-new job and message everyone a second time. */}
         {partlySent ? (
-          <button
-            onClick={() => void schedule()}
-            disabled={!ready || !when}
-            className="w-full rounded-lg bg-wa py-2.5 text-sm font-semibold text-white hover:bg-wa-dark disabled:opacity-50"
-          >
-            Save changes to the paused campaign
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void schedule()}
+              disabled={!ready || !when}
+              className="flex-1 rounded-lg border border-wa px-4 py-2.5 text-sm font-semibold text-wa-dark hover:bg-green-50 disabled:opacity-50"
+            >
+              Save changes
+            </button>
+            <button
+              onClick={() => void saveAndContinue()}
+              disabled={!ready || !when}
+              title="Saves your edits, then picks the campaign back up right away"
+              className="flex-1 rounded-lg bg-wa py-2.5 text-sm font-semibold text-white hover:bg-wa-dark disabled:opacity-50"
+            >
+              Save &amp; continue sending
+            </button>
+          </div>
         ) : (
           <div className="flex gap-2">
             <button

@@ -260,23 +260,27 @@ export default function MessageBubble({
     );
   }
 
+  // A media message is edited by its caption, not its (empty) text — WhatsApp
+  // carries both edits the same way on the wire (see secretedit.ts), so a
+  // caption is just as editable as a plain-text message.
+  const editableText = msg.type === 'text' ? msg.text : msg.caption;
   const canEdit =
     msg.fromMe &&
-    msg.type === 'text' &&
+    (msg.type === 'text' || (msg.hasMedia && !!msg.caption)) &&
     !msg.optimistic &&
     !msg.editTargetId &&
     Date.now() / 1000 - msg.timestamp < EDIT_WINDOW_S;
 
   function startEdit() {
     setMenuOpen(false);
-    setEditText(msg.text);
+    setEditText(editableText);
     setEditing(true);
   }
 
   function commitEdit() {
     const next = editText.trim();
     setEditing(false);
-    if (next && next !== msg.text) onEdit(msg, next);
+    if (next && next !== editableText) onEdit(msg, next);
   }
 
   function copyText() {
@@ -454,6 +458,12 @@ export default function MessageBubble({
         onContextMenu={(e) => {
           if (editing) return;
           e.preventDefault();
+          // Mirror toggleMenu()'s flip check: the trigger button is hidden
+          // (display:none) until the menu opens, so its own rect reads as
+          // zero here — measure off the always-rendered row instead.
+          const r = rowRef.current?.getBoundingClientRect();
+          if (r) setMenuUp(window.innerHeight - r.bottom < 260);
+          setEmojiOpen(false);
           setMenuOpen(true);
         }}
       >
@@ -525,7 +535,7 @@ export default function MessageBubble({
                 </button>
                 <button
                   onClick={commitEdit}
-                  disabled={!editText.trim() || editText.trim() === msg.text}
+                  disabled={!editText.trim() || editText.trim() === editableText}
                   title="Save (Enter)"
                   className="flex h-7 w-7 items-center justify-center rounded-full bg-wa text-white hover:bg-wa-dark disabled:opacity-40"
                 >
