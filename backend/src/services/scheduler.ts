@@ -1,4 +1,4 @@
-import type { BatchRule, Job, RepeatFreq } from '../types.js';
+import type { BatchRule, Job, JobSend, RepeatFreq } from '../types.js';
 import type { JobStore } from './jobs.js';
 import { personalizeItem, usesWaName } from './personalize.js';
 import { digitsOnly, toChatJid } from './phone.js';
@@ -126,6 +126,66 @@ export function nextOccurrence(from: Date, freq: RepeatFreq, after: Date): Date 
   let d = addFreq(from, freq);
   while (d.getTime() <= after.getTime()) d = addFreq(d, freq);
   return d;
+}
+
+/**
+ * Reorders pending sends so cold (never-contacted) recipients are woven evenly
+ * among warm ones, instead of wherever the ledger's `ORDER BY recipient` sort
+ * happened to cluster them. A recipient's items stay adjacent and in order —
+ * only the order of RECIPIENTS changes.
+ *
+ * The weave is ratio-based (a Bresenham-style accumulator), so cold contacts
+ * spread across the whole run in proportion to how many there are, rather than
+ * bunching at the front or back. A same-bucket streak is still possible once
+ * one bucket runs out — draining the rest of the longer list is unavoidable,
+ * and it is never cold that outlasts warm, since cold is the rationed one.
+ */
+export function interleaveByFamiliarity(
+  pending: JobSend[],
+  classify: (recipient: string, instance: string) => 'group' | 'known' | 'cold',
+  instance: string,
+): JobSend[] {
+  const byRecipient = new Map<string, JobSend[]>();
+  const recipientOrder: string[] = [];
+  for (const s of pending) {
+    let group = byRecipient.get(s.recipient);
+    if (!group) {
+      group = [];
+      byRecipient.set(s.recipient, group);
+      recipientOrder.push(s.recipient);
+    }
+    group.push(s);
+  }
+  if (recipientOrder.length <= 1) return pending;
+
+  const cold: string[] = [];
+  const warm: string[] = []; // known + group — neither is rationed
+  for (const recipient of recipientOrder)
+    (classify(recipient, instance) === 'cold' ? cold : warm).push(recipient);
+
+  const woven: string[] = [];
+  let ci = 0;
+  let wi = 0;
+  let acc = 0;
+  let lastWasCold = false;
+  while (ci < cold.length || wi < warm.length) {
+    acc += cold.length;
+    const coldDue = acc >= warm.length && ci < cold.length;
+    if (coldDue && !lastWasCold) {
+      woven.push(cold[ci++]!);
+      acc -= warm.length;
+      lastWasCold = true;
+    } else if (wi < warm.length) {
+      woven.push(warm[wi++]!);
+      lastWasCold = false;
+    } else {
+      woven.push(cold[ci++]!); // warm exhausted — cold drains on its own
+      acc -= warm.length;
+      lastWasCold = true;
+    }
+  }
+
+  return woven.flatMap((recipient) => byRecipient.get(recipient)!);
 }
 
 /**
@@ -331,8 +391,14 @@ export class Scheduler {
       pass < this.cfg.sendMaxAttempts && !cancelled && !pausedByOperator && !interrupted;
       pass++
     ) {
-      const pending = this.jobs.pendingSends(job.id);
+      let pending = this.jobs.pendingSends(job.id);
       if (!pending.length) break;
+      if (this.guards.familiarity)
+        pending = interleaveByFamiliarity(
+          pending,
+          (rec, i) => this.guards.familiarity!.classify(rec, i),
+          inst,
+        );
       for (let i = 0; i < pending.length; i++) {
         // shutdown mid-run: leave the job 'running' (not finalized) so boot
         // recovery re-pends it and the ledger resumes exactly where we stopped

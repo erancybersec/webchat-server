@@ -9,8 +9,9 @@ import {
 import { JobStore } from '../src/services/jobs.js';
 import { ColdSendQuota } from '../src/services/quota.js';
 import { EventRelay } from '../src/services/events.js';
-import { Scheduler, type SendGuards } from '../src/services/scheduler.js';
+import { interleaveByFamiliarity, Scheduler, type SendGuards } from '../src/services/scheduler.js';
 import { Sender } from '../src/services/sender.js';
+import type { JobSend } from '../src/types.js';
 import { FakeEvo, makeApp, type TestApp } from './helpers.js';
 
 const PAST = new Date(Date.now() - 60_000).toISOString();
@@ -381,6 +382,28 @@ describe('campaign sending under the cold-contact cap', () => {
     expect(jobs.pendingSends('j1')).toHaveLength(1);
   });
 
+  it('weaves cold and warm recipients on the wire instead of sending cold in a block', async () => {
+    // alphabetically these sort as all 4 cold, THEN all 4 warm — exactly the
+    // clustering the weave exists to avoid. Cap raised so none are deferred.
+    coldQuota = new ColdSendQuota(db, { coldCapEnabled: true, coldDailyCap: 10, coldWarmupStart: 10 });
+    const cold = nums(4, '97250');
+    const warm = nums(4, '97251');
+    for (const n of warm) familiarity.record(INST, n, false);
+    const scheduler = build(guards());
+    jobs.upsert({ id: 'j1', scheduledAt: PAST, recipients: [...cold, ...warm].map(r), items: [textItem] });
+    await scheduler.tick();
+
+    const sent = evo.sentTo();
+    expect(sent).toHaveLength(8);
+    const coldSet = new Set(cold);
+    let prevWasCold = false;
+    for (const recipient of sent) {
+      const isCold = coldSet.has(recipient);
+      expect(isCold && prevWasCold).toBe(false);
+      prevWasCold = isCold;
+    }
+  });
+
   it('is inert when no guards are wired at all', async () => {
     const scheduler = build({});
     jobs.upsert({ id: 'j1', scheduledAt: PAST, recipients: nums(5).map(r), items: [textItem] });
@@ -388,6 +411,78 @@ describe('campaign sending under the cold-contact cap', () => {
 
     expect(evo.sentTo()).toHaveLength(5);
     expect(jobs.byId('j1')!.status).toBe('done');
+  });
+});
+
+describe('interleaving cold and warm recipients within a send pass', () => {
+  const send = (recipient: string, itemIndex = 0): JobSend => ({
+    jobId: 'j1',
+    recipient,
+    isGroup: false,
+    itemIndex,
+    status: 'pending',
+    attempts: 0,
+    lastError: null,
+    sentAt: null,
+    messageId: null,
+    deliveredAt: null,
+    readAt: null,
+  });
+
+  const classifyFrom = (cold: Set<string>) => (rec: string) =>
+    cold.has(rec) ? ('cold' as const) : ('known' as const);
+
+  it('never places two cold recipients back to back', () => {
+    const cold = nums(20, '97250');
+    const warm = nums(60, '97251');
+    const coldSet = new Set(cold);
+    // the ledger's real order is alphanumeric by recipient — sort to match it
+    const pending = [...cold, ...warm].sort().map((n) => send(n));
+    const woven = interleaveByFamiliarity(pending, classifyFrom(coldSet), INST);
+
+    expect(woven).toHaveLength(pending.length);
+    let prevWasCold = false;
+    for (const s of woven) {
+      const isCold = coldSet.has(s.recipient);
+      expect(isCold && prevWasCold).toBe(false);
+      prevWasCold = isCold;
+    }
+  });
+
+  it('spreads cold across the run instead of leaving it clustered', () => {
+    const cold = nums(100, '97250');
+    const warm = nums(400, '97251');
+    const coldSet = new Set(cold);
+    const pending = [...cold, ...warm].sort().map((n) => send(n));
+    const woven = interleaveByFamiliarity(pending, classifyFrom(coldSet), INST);
+
+    // 1:4 ratio — all 100 cold recipients land within the first 400 sends,
+    // roughly one every 4th, and the tail (401-500) is warm-only
+    const first400 = woven.slice(0, 400).filter((s) => coldSet.has(s.recipient));
+    expect(first400).toHaveLength(100);
+    const tail = woven.slice(400);
+    expect(tail.every((s) => !coldSet.has(s.recipient))).toBe(true);
+  });
+
+  it('keeps a multi-item recipient sequence whole and in order', () => {
+    const cold = nums(3, '97250');
+    const warm = nums(3, '97251');
+    const coldSet = new Set(cold);
+    const pending = [...cold, ...warm].sort().flatMap((n) => [send(n, 0), send(n, 1)]);
+    const woven = interleaveByFamiliarity(pending, classifyFrom(coldSet), INST);
+
+    expect(woven).toHaveLength(pending.length);
+    for (let i = 0; i < woven.length; i += 2) {
+      expect(woven[i]!.recipient).toBe(woven[i + 1]!.recipient);
+      expect(woven[i]!.itemIndex).toBe(0);
+      expect(woven[i + 1]!.itemIndex).toBe(1);
+    }
+  });
+
+  it('is a no-op with nothing to weave', () => {
+    expect(interleaveByFamiliarity([], classifyFrom(new Set()), INST)).toEqual([]);
+    const one = [send('972520000000')];
+    expect(interleaveByFamiliarity(one, classifyFrom(new Set()), INST)).toEqual(one);
   });
 });
 
