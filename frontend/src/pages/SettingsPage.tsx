@@ -199,6 +199,107 @@ function AgentsTable() {
   );
 }
 
+/** The sidebar's section list — ids match the section wrappers below. */
+const NAV_ITEMS: Array<{ id: string; label: string }> = [
+  { id: 'connection', label: 'Connection' },
+  { id: 'sending', label: 'Sending' },
+  { id: 'safety', label: 'Send safety' },
+  { id: 'scheduling', label: 'Scheduling' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'retention', label: 'Data retention' },
+  { id: 'maintenance', label: 'Maintenance' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'toolbar', label: 'Toolbar order' },
+];
+
+function NavIcon({ id }: { id: string }) {
+  const p = { className: 'h-[18px] w-[18px] shrink-0', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, viewBox: '0 0 24 24' };
+  switch (id) {
+    case 'connection':
+      return <svg {...p}><path d="M9 3v4M15 3v4M7 7h10l-1 5a4 4 0 0 1-4 3.2A4 4 0 0 1 8 12L7 7Z" /><path d="M12 15.2V19M9 21h6" /></svg>;
+    case 'sending':
+      return <svg {...p}><path d="m3 12 18-8-8 18-2-8-8-2Z" /></svg>;
+    case 'safety':
+      return <svg {...p}><path d="M12 3 5 6v5c0 4.4 3 7.6 7 10 4-2.4 7-5.6 7-10V6l-7-3Z" /><path d="m9.5 12 1.8 1.8L14.7 10" /></svg>;
+    case 'scheduling':
+      return <svg {...p}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>;
+    case 'agents':
+      return <svg {...p}><circle cx="9" cy="9" r="2.8" /><path d="M3.5 18c.6-3 2.7-4.6 5.5-4.6s4.9 1.6 5.5 4.6" /><circle cx="17" cy="8" r="2.2" /><path d="M15.3 13.6c2.2.3 3.8 1.8 4.2 4.4" /></svg>;
+    case 'retention':
+      return <svg {...p}><ellipse cx="12" cy="6" rx="7" ry="2.6" /><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6" /><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6" /></svg>;
+    case 'maintenance':
+      return <svg {...p}><path d="M14.7 6.3a4 4 0 0 1-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 1 5.4-5.4l-2.3 2.3-2-2 2.3-2.3Z" /></svg>;
+    case 'notifications':
+      return <svg {...p}><path d="M6 10a6 6 0 1 1 12 0c0 4 1.3 5.5 1.3 5.5H4.7S6 14 6 10Z" /><path d="M10 18.5a2 2 0 0 0 4 0" /></svg>;
+    case 'toolbar':
+      return <svg {...p}><path d="M4 7h16M4 12h16M4 17h16" /><circle cx="9" cy="7" r="1.6" fill="currentColor" stroke="none" /><circle cx="16" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="10" cy="17" r="1.6" fill="currentColor" stroke="none" /></svg>;
+    default:
+      return null;
+  }
+}
+
+/** Sticky, scroll-spied jump list for the (long) settings page. Hidden on
+ * narrow screens — mobile just gets the plain stacked scroll. */
+function SettingsNav() {
+  const [active, setActive] = useState('connection');
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    const els = NAV_ITEMS.map((i) => document.getElementById(i.id)).filter(
+      (el): el is HTMLElement => el !== null,
+    );
+    if (!els.length) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setActive(entry.target.id);
+        }
+      },
+      { rootMargin: '-15% 0px -70% 0px', threshold: 0 },
+    );
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
+  function go(id: string) {
+    setActive(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  const q = query.trim().toLowerCase();
+  const items = NAV_ITEMS.filter((i) => !q || i.label.toLowerCase().includes(q));
+
+  return (
+    <div className="sticky top-4 hidden w-52 flex-none rounded-xl border border-gray-200 bg-white p-3.5 shadow-sm lg:block">
+      <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Jump to</p>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Filter sections…"
+        aria-label="Filter settings sections"
+        className="mb-2 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs"
+      />
+      <div className="flex flex-col">
+        {items.map((i) => (
+          <button
+            key={i.id}
+            onClick={() => go(i.id)}
+            className={`flex items-center gap-2.5 rounded-md border-l-[3px] px-2 py-1.5 text-left text-[13px] ${
+              active === i.id
+                ? 'border-wa bg-green-50 font-medium text-wa-dark'
+                : 'border-transparent text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            <NavIcon id={i.id} />
+            {i.label}
+          </button>
+        ))}
+        {items.length === 0 && <p className="px-2 py-1.5 text-xs text-gray-400">No matching section</p>}
+      </div>
+    </div>
+  );
+}
+
 function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
@@ -524,7 +625,9 @@ export default function SettingsPage() {
     : 'Evolution API key';
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5 overflow-y-auto p-4">
+    <div className="mx-auto flex max-w-5xl items-start gap-6 overflow-y-auto p-4">
+      <SettingsNav />
+      <div className="max-w-2xl flex-1 space-y-5">
       <div>
         <h2 className="text-lg font-semibold text-gray-800">Settings</h2>
         <p className="text-sm text-gray-500">
@@ -560,7 +663,7 @@ export default function SettingsPage() {
               : `Not connected${conn.data?.error ? ` — ${conn.data.error}` : ''}`}
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="connection" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Evolution API connection</h3>
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">Server URL</label>
@@ -622,7 +725,7 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="sending" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Sending</h3>
         <p className="text-xs text-gray-500">
           Random delay between messages in scheduled/bulk sends — mimics human pacing.
@@ -653,7 +756,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="safety" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Send safety</h3>
         <p className="text-xs text-gray-500">
           What keeps this number from being reported and banned: how many strangers it may reach in
@@ -795,7 +898,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="scheduling" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Scheduling</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -843,7 +946,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="agents" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Agents</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -881,7 +984,7 @@ export default function SettingsPage() {
         {agentsOn && <AgentsTable />}
       </div>
 
-      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div id="retention" className="scroll-mt-4 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700">Data retention</h3>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -907,56 +1010,62 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <MaintenanceCard />
+      <div id="maintenance" className="scroll-mt-4">
+        <MaintenanceCard />
+      </div>
 
-      <NotificationPrefsCard />
+      <div id="notifications" className="scroll-mt-4 space-y-5">
+        <NotificationPrefsCard />
 
-      <ToolbarPrefsCard />
-
-      {(instancesList.data?.instances?.length ?? 0) >= 1 && (
-        <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-gray-700">Channels that notify</h3>
-          <div>
-            <p className="mb-2 text-xs text-gray-400">
-              Which WhatsApp lines fire a notification at all — the default channel included. This is
-              a shared, operator-level setting; per-person muting lives above. None selected means no
-              notifications for anyone.
-            </p>
-            {notificationsEnabled() && notifyInstances.length === 0 && (
-              <p className="mb-2 text-xs text-amber-600">
-                No channels selected — nobody will receive notifications.
+        {(instancesList.data?.instances?.length ?? 0) >= 1 && (
+          <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+            <h3 className="text-sm font-semibold text-gray-700">Channels that notify</h3>
+            <div>
+              <p className="mb-2 text-xs text-gray-400">
+                Which WhatsApp lines fire a notification at all — the default channel included. This is
+                a shared, operator-level setting; per-person muting lives above. None selected means no
+                notifications for anyone.
               </p>
-            )}
-            <div className="flex flex-wrap gap-2">
-              {(instancesList.data?.instances ?? []).map((i) => {
-                const def = i.name === instancesList.data?.default;
-                const on = notifyInstances.includes(i.name);
-                return (
-                  <label
-                    key={i.name}
-                    className={`flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
-                      on ? 'border-wa bg-green-50 text-wa-dark' : 'border-gray-200 text-gray-600'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-wa"
-                      checked={on}
-                      onChange={(e) =>
-                        setNotifyInstances((prev) =>
-                          e.target.checked ? [...prev, i.name] : prev.filter((n) => n !== i.name),
-                        )
-                      }
-                    />
-                    {i.name}
-                    {def && <span className="text-[10px] text-gray-400">(default)</span>}
-                  </label>
-                );
-              })}
+              {notificationsEnabled() && notifyInstances.length === 0 && (
+                <p className="mb-2 text-xs text-amber-600">
+                  No channels selected — nobody will receive notifications.
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {(instancesList.data?.instances ?? []).map((i) => {
+                  const def = i.name === instancesList.data?.default;
+                  const on = notifyInstances.includes(i.name);
+                  return (
+                    <label
+                      key={i.name}
+                      className={`flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
+                        on ? 'border-wa bg-green-50 text-wa-dark' : 'border-gray-200 text-gray-600'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-wa"
+                        checked={on}
+                        onChange={(e) =>
+                          setNotifyInstances((prev) =>
+                            e.target.checked ? [...prev, i.name] : prev.filter((n) => n !== i.name),
+                          )
+                        }
+                      />
+                      {i.name}
+                      {def && <span className="text-[10px] text-gray-400">(default)</span>}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      <div id="toolbar" className="scroll-mt-4">
+        <ToolbarPrefsCard />
+      </div>
 
       {feedback && (
         <div
@@ -976,6 +1085,7 @@ export default function SettingsPage() {
       >
         {busy ? 'Working…' : 'Save settings'}
       </button>
+      </div>
     </div>
   );
 }
