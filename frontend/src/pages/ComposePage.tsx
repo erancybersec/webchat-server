@@ -6,6 +6,7 @@ import SendProgress from '../components/SendProgress';
 import { api } from '../lib/api';
 import { batchSummary, clockLabel, coldCapCaveat, estimateFinish } from '../lib/campaign';
 import { clearComposeDraft, peekComposeDraft } from '../lib/composeDraft';
+import { navigate as gotoJob } from '../lib/nav';
 import { useJobSend } from '../lib/useJobSend';
 import { useNeedsApproval } from '../lib/workbench';
 import type { BatchRule, Job, JobItem, Recipient, RepeatFreq } from '../types';
@@ -72,6 +73,9 @@ export default function ComposePage() {
   const [coldCapOn, setColdCapOn] = useState(!!draft?.batch?.coldCap);
   const [coldCapDaily, setColdCapDaily] = useState(String(draft?.batch?.coldCap?.dailyCap ?? 50));
   const [feedback, setFeedback] = useState('');
+  // set alongside `feedback` when the message is about a specific paused
+  // campaign, so the line can offer a straight jump to its live progress
+  const [feedbackJobId, setFeedbackJobId] = useState<string | null>(null);
   const { progress, setProgress, run } = useJobSend();
   // the repeat picker only appears when the server-side safety toggle is on
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings.get, staleTime: 60_000 });
@@ -146,6 +150,7 @@ export default function ComposePage() {
 
   async function sendNow() {
     setFeedback('');
+    setFeedbackJobId(null);
     try {
       const result = await run(recipients, finalizeItems(items), batchRule() ?? null);
       setFeedback(
@@ -165,6 +170,7 @@ export default function ComposePage() {
   /** @returns the saved job, or null if the save failed (feedback already set). */
   async function schedule(): Promise<Job | null> {
     setFeedback('');
+    setFeedbackJobId(null);
     setProgress(null);
     try {
       // while recurring is disabled in Settings the field is omitted entirely,
@@ -191,11 +197,12 @@ export default function ComposePage() {
         saved.status === 'pending_approval'
           ? `Submitted for approval — once released it fires ${new Date(when).toLocaleString()}`
           : partlySent
-            ? 'Saved — the recipients still to go get the new message. Continue the campaign from the list it is in.'
+            ? 'Saved — the recipients still to go get the new message.'
             : editingJobId
               ? `Scheduled job updated — fires ${new Date(when).toLocaleString()}`
               : `Scheduled for ${new Date(when).toLocaleString()} → Scheduled tab`,
       );
+      if (partlySent && saved.status !== 'pending_approval') setFeedbackJobId(saved.id);
       setShowSchedule(false);
       qc.invalidateQueries({ queryKey: ['jobs'] });
       return saved;
@@ -212,9 +219,11 @@ export default function ComposePage() {
     try {
       await api.jobs.resume(saved.id);
       setFeedback('Saved — continuing the campaign now.');
+      setFeedbackJobId(saved.id);
       qc.invalidateQueries({ queryKey: ['jobs'] });
     } catch (e) {
       setFeedback(String((e as Error).message));
+      setFeedbackJobId(null);
     }
   }
 
@@ -565,7 +574,20 @@ export default function ComposePage() {
         )}
 
         {progress && <SendProgress progress={progress} />}
-        {feedback && <div className="text-sm text-wa-dark">{feedback}</div>}
+        {feedback && (
+          <div className="text-sm text-wa-dark">
+            {feedback}
+            {feedbackJobId && (
+              <button
+                type="button"
+                onClick={() => gotoJob({ job: feedbackJobId })}
+                className="ml-1 font-semibold underline hover:no-underline"
+              >
+                View progress →
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
