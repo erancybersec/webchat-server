@@ -1,6 +1,7 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useConfirm } from '../components/Confirm';
+import RecipientTableModal from '../components/RecipientTableModal';
 import { useToast } from '../components/Toast';
 import { api } from '../lib/api';
 import {
@@ -12,7 +13,7 @@ import {
   usedSourceIds,
 } from '../lib/listRecipe';
 import { normalizePhone } from '../lib/phone';
-import type { ListMember, ListRecipe, ListRecipeSource, RecipientList } from '../types';
+import type { ListMember, ListRecipe, ListRecipeSource, Recipient, RecipientList } from '../types';
 
 /** Parse one paste line: phone first, optional name after a comma/tab/pipe. */
 function parseMemberLine(line: string): ListMember | null {
@@ -249,6 +250,12 @@ function sourceLabel(recipe: ListRecipe, id: string): string {
   return `“${hit?.name || id}”`;
 }
 
+const toRecipients = (members: ListMember[]): Recipient[] =>
+  members.map((m) => ({ id: m.recipient, isGroup: m.isGroup, ...(m.name ? { name: m.name } : {}) }));
+
+const toMembers = (recipients: Recipient[]): ListMember[] =>
+  recipients.map((r) => ({ recipient: r.id, isGroup: !!r.isGroup, name: r.name ?? '' }));
+
 type EditorMode = 'paste' | 'combine';
 
 function ListEditor({
@@ -277,6 +284,7 @@ function ListEditor({
   const [showPreview, setShowPreview] = useState(true);
   const [loading, setLoading] = useState(!!list);
   const [busy, setBusy] = useState(false);
+  const [tableOpen, setTableOpen] = useState(false);
 
   useEffect(() => {
     if (!list) return;
@@ -463,13 +471,22 @@ function ListEditor({
                   placeholder={'0521234567, ישראל ישראלי\n972529876543, דוגמה לקוח\n0501234567'}
                   className="h-24 w-full resize-y rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm"
                 />
-                <button
-                  onClick={addPasted}
-                  disabled={!paste.trim()}
-                  className="mt-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Add numbers
-                </button>
+                <div className="mt-1 flex items-center gap-2">
+                  <button
+                    onClick={addPasted}
+                    disabled={!paste.trim()}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Add numbers
+                  </button>
+                  <button
+                    onClick={() => setTableOpen(true)}
+                    title="Edit members as a number/name table — select, remove in bulk, paste straight from Excel"
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-wa hover:bg-green-50 hover:text-wa-dark"
+                  >
+                    ⊞ Table
+                  </button>
+                </div>
               </div>
               {loading ? (
                 <p className="py-4 text-center text-sm text-gray-400">Loading members…</p>
@@ -683,6 +700,13 @@ function ListEditor({
           </div>
         </div>
       </div>
+      {tableOpen && (
+        <RecipientTableModal
+          value={toRecipients(members)}
+          onApply={(next) => setMembers(toMembers(next))}
+          onClose={() => setTableOpen(false)}
+        />
+      )}
     </div>
   );
 }
