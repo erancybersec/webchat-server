@@ -2,70 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "frontend",
+      "name": "dev-api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev:frontend"
-      ],
-      "port": 5173
-    },
-    {
-      "name": "backend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev:backend"
-      ],
+      "runtimeArgs": ["run", "dev:local:api"],
       "port": 8080
     },
     {
-      "name": "local-api",
+      "name": "dev-web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev:local:api"
-      ],
-      "port": 8080
-    },
-    {
-      "name": "local-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev:local:web"
-      ],
+      "runtimeArgs": ["run", "dev:local:web"],
       "port": 5173
-    },
-    {
-      "name": "frontend-sandbox",
-      "runtimeExecutable": "powershell",
-      "runtimeArgs": [
-        "-NoProfile",
-        "-Command",
-        "$env:VITE_PROXY_TARGET='http://localhost:8090'; npm run dev:frontend"
-      ],
-      "port": 5173
-    },
-    {
-      "name": "backend-sandbox",
-      "runtimeExecutable": "powershell",
-      "runtimeArgs": [
-        "-NoProfile",
-        "-Command",
-        "$env:PORT='8090'; $env:DB_PATH='./data/sandbox-verify.db'; $env:EVOLUTION_BASE='http://127.0.0.1:9'; $env:EVOLUTION_INSTANCE='Sandbox'; $env:EVOLUTION_APIKEY='sandbox'; $env:EVENTS_ENABLED='false'; $env:STATIC_DIR='./frontend/dist'; $env:SEND_MAX_ATTEMPTS='1'; $env:DELAY_MIN='0'; $env:DELAY_MAX='0'; npx tsx backend/src/index.ts"
-      ],
-      "port": 8090
-    },
-    {
-      "name": "backend-sandbox-mockevo",
-      "runtimeExecutable": "powershell",
-      "runtimeArgs": [
-        "-NoProfile",
-        "-Command",
-        "$env:PORT='8090'; $env:DB_PATH='./data/sandbox-verify.db'; $env:EVOLUTION_BASE='http://127.0.0.1:9099'; $env:EVOLUTION_INSTANCE='Sandbox'; $env:EVOLUTION_APIKEY='sandbox'; $env:EVENTS_ENABLED='false'; $env:SEND_MAX_ATTEMPTS='2'; $env:DELAY_MIN='1'; $env:DELAY_MAX='2'; $env:SCHED_POLL_MS='5000'; npx tsx backend/src/index.ts"
-      ],
-      "port": 8090
     }
   ]
 }
