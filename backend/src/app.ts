@@ -285,7 +285,14 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   registerReminders(app, { cfg, agents, reminders });
   registerPush(app, { cfg, push, prefs: notifyPrefs });
   registerToolbarPrefs(app, { cfg, prefs: toolbarPrefs });
-  registerInstances(app, { cfg, agents, access: instanceAccess, instances: instancesService });
+  registerInstances(app, {
+    cfg,
+    agents,
+    access: instanceAccess,
+    instances: instancesService,
+    evo,
+    requireAdmin: guard('settings.manage'),
+  });
   registerMaintenance(app, {
     cfg,
     maintenance,

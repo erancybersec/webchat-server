@@ -141,4 +141,9 @@ export class InstancesService {
     this.cache = { at: Date.now(), list };
     return list;
   }
+
+  /** Drop the cached list — call after an action that changes connection state (e.g. a QR scan). */
+  invalidate(): void {
+    this.cache = null;
+  }
 }

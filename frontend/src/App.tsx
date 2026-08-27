@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import ConnectLineModal from './components/ConnectLineModal';
 import { ConfirmProvider } from './components/Confirm';
 import { ToastProvider, useToast } from './components/Toast';
-import { agentBadgeClass, agentLabel, useMe } from './lib/agents';
+import { agentBadgeClass, agentLabel, useIsAdmin, useMe } from './lib/agents';
 import { api } from './lib/api';
 import { setActiveInstance, useActiveInstance, useInstances } from './lib/instance';
 import { convTimestamp } from './lib/chatModel';
@@ -132,8 +133,10 @@ function InstanceSwitcher({ compact = false }: { compact?: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const me = useMe();
+  const isAdmin = useIsAdmin();
   const q = useInstances();
   const active = useActiveInstance();
+  const [reconnecting, setReconnecting] = useState('');
   const def = q.data?.default ?? '';
   const list = q.data?.instances ?? [];
   // an agent granted only non-default lines never reaches the default —
@@ -226,27 +229,40 @@ function InstanceSwitcher({ compact = false }: { compact?: boolean }) {
             const isCur = i.name === current;
             const ok = i.connectionStatus === 'open';
             return (
-              <button
+              <div
                 key={i.name}
                 role="menuitem"
-                onClick={() => pick(i.name)}
                 className={`flex w-full items-center gap-2 px-3 py-2 text-sm ${
                   isCur ? 'bg-gray-50 font-medium text-gray-900' : 'text-gray-700 hover:bg-gray-100'
                 }`}
               >
-                <span className={`h-2 w-2 shrink-0 rounded-full ${ok ? 'bg-wa' : 'bg-red-500'}`} />
-                <span className="min-w-0 flex-1 truncate text-left">{i.name}</span>
-                {!ok && <span className="shrink-0 text-[10px] font-medium text-red-500">offline</span>}
-                {isCur && (
-                  <svg className="h-4 w-4 shrink-0 text-wa-dark" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
+                <button onClick={() => pick(i.name)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${ok ? 'bg-wa' : 'bg-red-500'}`} />
+                  <span className="min-w-0 flex-1 truncate">{i.name}</span>
+                  {!ok && <span className="shrink-0 text-[10px] font-medium text-red-500">offline</span>}
+                  {isCur && (
+                    <svg className="h-4 w-4 shrink-0 text-wa-dark" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+                {!ok && isAdmin && (
+                  <button
+                    onClick={() => {
+                      setOpen(false);
+                      setReconnecting(i.name);
+                    }}
+                    className="shrink-0 rounded border border-gray-300 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
+                  >
+                    Scan QR
+                  </button>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>
       )}
+      {reconnecting && <ConnectLineModal name={reconnecting} onClose={() => setReconnecting('')} />}
     </div>
   );
 }

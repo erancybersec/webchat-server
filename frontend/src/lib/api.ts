@@ -403,6 +403,11 @@ export const api = {
 
   instances: {
     list: () => get<{ default: string; instances: InstanceInfo[] }>('/api/instances'),
+    qr: (name: string) =>
+      get<{ connected: boolean; base64: string | null; pairingCode: string | null }>(
+        `/api/instances/${encodeURIComponent(name)}/qr`,
+      ),
+    state: (name: string) => get<{ state: string }>(`/api/instances/${encodeURIComponent(name)}/state`),
   },
 
   maintenance: {
