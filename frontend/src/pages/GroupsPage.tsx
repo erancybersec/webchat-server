@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useConfirm } from '../components/Confirm';
 import QueueEditor, { finalizeItems, validateItem } from '../components/QueueEditor';
 import SendProgress from '../components/SendProgress';
@@ -56,6 +56,7 @@ function BrowseTab({
   const [when, setWhen] = useState('');
   const [showSchedule, setShowSchedule] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [extracting, setExtracting] = useState(false);
   const { progress, setProgress, run } = useJobSend();
 
   const list = sortGroups(
@@ -179,6 +180,20 @@ function BrowseTab({
         >
           ⚙ Manage Selected Groups ({selected.size})
         </button>
+        <button
+          onClick={() => setExtracting(true)}
+          disabled={!selected.size}
+          className="w-full rounded-xl border border-gray-300 py-2.5 text-sm font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+        >
+          📱 Extract Participant Numbers ({selected.size})
+        </button>
+        {extracting && (
+          <ExtractNumbersModal
+            jids={[...selected]}
+            groups={list}
+            onClose={() => setExtracting(false)}
+          />
+        )}
         <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-800">Message Sequence</h3>
           <QueueEditor items={items} onChange={setItems} />
@@ -218,6 +233,160 @@ function BrowseTab({
           {progress && <SendProgress progress={progress} />}
           {feedback && <div className="text-sm text-wa-dark">{feedback}</div>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+interface ExtractedNumber {
+  number: string;
+  groupNames: Set<string>;
+}
+
+/** Fetches participants for each selected group and merges them into one
+ *  deduped number list — a number that shows up in two selected groups is
+ *  listed once, tagged with both group names. */
+function ExtractNumbersModal({
+  jids,
+  groups,
+  onClose,
+}: {
+  jids: string[];
+  groups: Array<Record<string, any>>;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [done, setDone] = useState(0);
+  const [numbers, setNumbers] = useState<ExtractedNumber[] | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const byNumber = new Map<string, ExtractedNumber>();
+      let n = 0;
+      for (const jid of jids) {
+        try {
+          const info = await api.groups.info(jid);
+          const participants: Array<Record<string, any>> =
+            (info as any)?.participants ?? (Array.isArray(info) ? (info[0] as any)?.participants : null) ?? [];
+          const name = groupName(groups, jid);
+          for (const p of participants) {
+            const pid = String(p.id ?? '');
+            if (!pid) continue;
+            const number = displayNumber(pid);
+            const entry = byNumber.get(number) ?? { number, groupNames: new Set<string>() };
+            entry.groupNames.add(name);
+            byNumber.set(number, entry);
+          }
+        } catch (e) {
+          if (!cancelled) setError(String((e as Error).message ?? e));
+        }
+        n += 1;
+        if (!cancelled) setDone(n);
+        await sleep(200);
+      }
+      if (!cancelled) {
+        setNumbers([...byNumber.values()].sort((a, b) => a.number.localeCompare(b.number)));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function asTable(): string[][] {
+    return [['phone', 'groups']].concat(
+      (numbers ?? []).map((n) => [n.number, [...n.groupNames].join('; ')]),
+    );
+  }
+  function copyNumbers() {
+    const text = (numbers ?? []).map((n) => n.number).join('\n');
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => toast(`Copied ${numbers?.length ?? 0} numbers`))
+      .catch(() => toast('Copy failed', 'err'));
+  }
+  function exportCsv() {
+    const csv = asTable()
+      .map((r) => r.map((c) => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(','))
+      .join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'group-numbers.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast('CSV downloaded');
+  }
+
+  const loading = numbers === null;
+  const dupCount = numbers ? numbers.reduce((sum, n) => sum + n.groupNames.size - 1, 0) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[80vh] w-full max-w-lg flex-col gap-3 rounded-xl bg-white p-5 shadow-xl"
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-800">Extracted Participant Numbers</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+
+        {loading && (
+          <div className="space-y-1 text-xs text-gray-500">
+            <span>Loading group {done}/{jids.length}…</span>
+            <div className="h-1.5 w-full rounded-full bg-gray-100">
+              <div
+                className="h-1.5 rounded-full bg-wa transition-all"
+                style={{ width: `${jids.length ? (done / jids.length) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+        {error && <div className="text-xs text-red-500">{error}</div>}
+
+        {!loading && (
+          <>
+            <div className="text-xs text-gray-500">
+              {numbers!.length} unique number{numbers!.length === 1 ? '' : 's'} from {jids.length} group
+              {jids.length === 1 ? '' : 's'}
+              {dupCount > 0 ? ` — ${dupCount} duplicate${dupCount === 1 ? '' : 's'} removed` : ''}
+            </div>
+            <div className="max-h-72 flex-1 space-y-0.5 overflow-y-auto rounded-lg border border-gray-100 p-2 text-xs">
+              {numbers!.length === 0 && <div className="text-gray-400">No participants found</div>}
+              {numbers!.map((n) => (
+                <div key={n.number} className="flex items-center justify-between gap-2">
+                  <span className="font-mono">{n.number}</span>
+                  {n.groupNames.size > 1 && (
+                    <span className="shrink-0 text-gray-400" title={[...n.groupNames].join(', ')}>
+                      in {n.groupNames.size} groups
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={copyNumbers}
+                disabled={!numbers!.length}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                ⧉ Copy
+              </button>
+              <button
+                onClick={exportCsv}
+                disabled={!numbers!.length}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                ⬇ CSV
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
