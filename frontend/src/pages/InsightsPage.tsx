@@ -1,7 +1,9 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { agentBadgeClass, agentLabel, usePerm } from '../lib/agents';
+import { agentBadgeClass, agentLabel, useIsAdmin, usePerm } from '../lib/agents';
 import { api, type AnalyticsRange } from '../lib/api';
+import { useConfirm } from '../components/Confirm';
+import { useToast } from '../components/Toast';
 import type { AgentInsightsRow, AnalyticsSummary, MaintenanceReport } from '../types';
 
 // Today + the usual presets. `1` resolves to days=1 server-side (today only).
@@ -495,12 +497,38 @@ function AgentActivity({ range, mineOnly }: { range: AnalyticsRange; mineOnly: b
 
 /** Disk / DB / Evolution storage telemetry + retention status (admins). */
 function ServerHealth() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const isAdmin = useIsAdmin();
   const q = useQuery({
     queryKey: ['maintenance'],
     queryFn: api.maintenance.get,
     staleTime: 60_000,
     retry: 1,
   });
+  const del = useMutation({
+    mutationFn: (name: string) => api.instances.remove(name),
+    onSuccess: (_r, name) => {
+      toast(`Deleted “${name}” and its stored history`, 'ok');
+      qc.invalidateQueries({ queryKey: ['maintenance'] });
+      qc.invalidateQueries({ queryKey: ['instances'] });
+    },
+    onError: (e) => toast((e as Error).message || 'Failed to delete channel', 'err'),
+  });
+  async function deleteChannel(name: string, isDefault: boolean) {
+    if (isDefault) {
+      toast('Change the default channel in Settings → Connection before deleting it', 'err');
+      return;
+    }
+    const ok = await confirm({
+      title: `Delete “${name}”?`,
+      body: 'This permanently deletes the channel and every WhatsApp message, chat and contact it stored on the Evolution server. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (ok) del.mutate(name);
+  }
   if (q.isLoading) return <p className="py-6 text-center text-sm text-gray-400">Loading…</p>;
   if (q.isError)
     return (
@@ -568,37 +596,52 @@ function ServerHealth() {
           <p className="text-sm text-red-500">Evolution unreachable — {d.evolutionError}</p>
         ) : (
           <ul className="space-y-1 text-sm">
-            {(d.evolution ?? []).map((i) => (
-              <li key={i.name} className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1.5 text-gray-600">
-                  <span
-                    className={`inline-block h-2 w-2 rounded-full ${i.connectionStatus === 'open' ? 'bg-wa' : 'bg-red-500'}`}
-                  />
-                  {i.name}
-                  {i.name === d.defaultInstance && <span className="text-[10px] text-gray-400">(default)</span>}
-                  {i.connectionStatus !== 'open' && (
-                    <span className="text-xs text-red-500">
-                      disconnected{i.disconnectedAt ? ` since ${new Date(i.disconnectedAt).toLocaleDateString()}` : ''}
-                    </span>
-                  )}
-                </span>
-                <span className="shrink-0 text-right text-gray-700">
-                  {i.counts ? (
-                    <>
-                      {fmtNum(i.counts.messages)} msgs · {fmtNum(i.counts.chats)} chats
-                      <span
-                        className="block text-[10px] text-gray-400"
-                        title={`Estimated at ~${AVG_MSG_BYTES} bytes per stored message`}
-                      >
-                        ≈ {fmtBytes(i.counts.messages * AVG_MSG_BYTES)} on disk
+            {(d.evolution ?? []).map((i) => {
+              const isDefault = i.name === d.defaultInstance;
+              return (
+                <li key={i.name} className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5 text-gray-600">
+                    <span
+                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${i.connectionStatus === 'open' ? 'bg-wa' : 'bg-red-500'}`}
+                    />
+                    <span className="truncate">{i.name}</span>
+                    {isDefault && <span className="shrink-0 text-[10px] text-gray-400">(default)</span>}
+                    {i.connectionStatus !== 'open' && (
+                      <span className="shrink-0 text-xs text-red-500">
+                        disconnected{i.disconnectedAt ? ` since ${new Date(i.disconnectedAt).toLocaleDateString()}` : ''}
                       </span>
-                    </>
-                  ) : (
-                    '—'
-                  )}
-                </span>
-              </li>
-            ))}
+                    )}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-right text-gray-700">
+                      {i.counts ? (
+                        <>
+                          {fmtNum(i.counts.messages)} msgs · {fmtNum(i.counts.chats)} chats
+                          <span
+                            className="block text-[10px] text-gray-400"
+                            title={`Estimated at ~${AVG_MSG_BYTES} bytes per stored message`}
+                          >
+                            ≈ {fmtBytes(i.counts.messages * AVG_MSG_BYTES)} on disk
+                          </span>
+                        </>
+                      ) : (
+                        '—'
+                      )}
+                    </span>
+                    {isAdmin && (
+                      <button
+                        title={isDefault ? 'Change the default channel before deleting it' : `Delete “${i.name}”`}
+                        onClick={() => deleteChannel(i.name, isDefault)}
+                        disabled={del.isPending && del.variables === i.name}
+                        className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-50 disabled:opacity-40"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
         {!d.evolutionError && (d.evolution ?? []).some((i) => i.counts) && (

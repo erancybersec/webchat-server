@@ -189,6 +189,82 @@ describe('multi-instance: /api/instances + per-agent grants', () => {
   });
 });
 
+describe('multi-instance: add/delete channels', () => {
+  let t: TestApp;
+  beforeEach(async () => {
+    t = await makeApp();
+  });
+  afterEach(async () => {
+    await t.app.close();
+    t.db.close();
+  });
+
+  const enable = () =>
+    t.app.inject({ method: 'PUT', url: '/api/settings', payload: { agentsEnabled: true } });
+  const provision = async () => {
+    await enable();
+    await t.app.inject({ method: 'GET', url: '/api/me', headers: HDR('admin@x.com') });
+    await t.app.inject({ method: 'GET', url: '/api/me', headers: HDR('agent@x.com') });
+  };
+
+  it('creates a new Evolution instance and returns its QR', async () => {
+    const res = await t.app.inject({ method: 'POST', url: '/api/instances', payload: { name: 'Third' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: 'Third' });
+    expect(t.evo.calls.at(-1)).toMatchObject({
+      endpoint: '/instance/create',
+      body: { instanceName: 'Third', qrcode: true, integration: 'WHATSAPP-BAILEYS' },
+    });
+  });
+
+  it('rejects an invalid or already-taken channel name', async () => {
+    const bad = await t.app.inject({ method: 'POST', url: '/api/instances', payload: { name: 'a/../b' } });
+    expect(bad.statusCode).toBe(400);
+    const taken = await t.app.inject({ method: 'POST', url: '/api/instances', payload: { name: 'Second' } });
+    expect(taken.statusCode).toBe(409);
+  });
+
+  it('only admins may create a channel', async () => {
+    await provision();
+    const res = await t.app.inject({
+      method: 'POST',
+      url: '/api/instances',
+      headers: HDR('agent@x.com'),
+      payload: { name: 'Third' },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('deletes a non-default channel: logs out then deletes, and drops the cache', async () => {
+    const res = await t.app.inject({ method: 'DELETE', url: '/api/instances/Second' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    const [logout, del] = t.evo.calls.slice(-2);
+    expect(logout).toMatchObject({ endpoint: '/instance/logout/Second', method: 'DELETE' });
+    expect(del).toMatchObject({ endpoint: '/instance/delete/Second', method: 'DELETE' });
+
+    // cache was dropped — the next list fetch hits Evolution again
+    const before = t.evo.calls.length;
+    await t.app.inject({ method: 'GET', url: '/api/instances' });
+    expect(t.evo.calls.length).toBeGreaterThan(before);
+  });
+
+  it('refuses to delete the configured default channel', async () => {
+    const res = await t.app.inject({ method: 'DELETE', url: '/api/instances/Test' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('only admins may delete a channel', async () => {
+    await provision();
+    const res = await t.app.inject({
+      method: 'DELETE',
+      url: '/api/instances/Second',
+      headers: HDR('agent@x.com'),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 describe('multi-instance: jobs carry their instance', () => {
   let t: TestApp;
   beforeEach(async () => {

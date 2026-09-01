@@ -186,6 +186,204 @@ describe('/api/lists', () => {
   });
 });
 
+describe('/api/lists — per-line visibility', () => {
+  let t: TestApp;
+  beforeEach(async () => {
+    t = await makeApp();
+  });
+  afterEach(async () => {
+    await t.app.close();
+    t.db.close();
+  });
+
+  const HDR = (email: string) => ({ 'cf-access-authenticated-user-email': email });
+  const enable = () =>
+    t.app.inject({ method: 'PUT', url: '/api/settings', payload: { agentsEnabled: true } });
+  /** First request bootstraps the admin; the rest provision plain agents. */
+  const provision = async (...emails: string[]) => {
+    await enable();
+    await t.app.inject({ method: 'GET', url: '/api/me', headers: HDR('admin@x.com') });
+    for (const e of emails) await t.app.inject({ method: 'GET', url: '/api/me', headers: HDR(e) });
+  };
+  const grant = (email: string, instances: string[]) =>
+    t.app.inject({
+      method: 'PUT',
+      url: `/api/agents/${encodeURIComponent(email)}`,
+      headers: HDR('admin@x.com'),
+      payload: { instances },
+    });
+
+  it('a new list defaults to the line it was created on, and stays off other lines', async () => {
+    const onSecond = (
+      await t.app.inject({
+        method: 'POST',
+        url: '/api/lists?instance=Second',
+        payload: { name: 'Second-only' },
+      })
+    ).json();
+    expect(onSecond.lineScope).toEqual(['Second']);
+
+    const onDefault = (
+      await t.app.inject({ method: 'POST', url: '/api/lists', payload: { name: 'Default-only' } })
+    ).json();
+    expect(onDefault.lineScope).toEqual(['Test']);
+
+    const seenOnSecond = (
+      await t.app.inject({ method: 'GET', url: '/api/lists?instance=Second' })
+    ).json();
+    expect(seenOnSecond.map((l: any) => l.name)).toEqual(['Second-only']);
+
+    const seenOnDefault = (await t.app.inject({ method: 'GET', url: '/api/lists' })).json();
+    expect(seenOnDefault.map((l: any) => l.name)).toEqual(['Default-only']);
+  });
+
+  it('an admin can widen a list to every line', async () => {
+    const created = (
+      await t.app.inject({ method: 'POST', url: '/api/lists', payload: { name: 'Widened' } })
+    ).json();
+    expect((await t.app.inject({ method: 'GET', url: '/api/lists?instance=Second' })).json()).toEqual([]);
+
+    const updated = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      payload: { lineScope: null },
+    });
+    expect(updated.json().lineScope).toBeNull();
+
+    const nowOnSecond = (
+      await t.app.inject({ method: 'GET', url: '/api/lists?instance=Second' })
+    ).json();
+    expect(nowOnSecond.map((l: any) => l.name)).toEqual(['Widened']);
+  });
+
+  it('a non-admin creator can only grant lines they themselves can see', async () => {
+    await provision('agent@x.com');
+    await grant('agent@x.com', ['Second']);
+    const agentHdr = HDR('agent@x.com');
+
+    const created = (
+      await t.app.inject({
+        method: 'POST',
+        url: '/api/lists?instance=Second',
+        headers: agentHdr,
+        payload: { name: 'Mine' },
+      })
+    ).json();
+    expect(created.lineScope).toEqual(['Second']);
+
+    // can't grant a line outside their own access
+    const deniedLine = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: agentHdr,
+      payload: { lineScope: ['Test'] },
+    });
+    expect(deniedLine.statusCode).toBe(403);
+
+    // can't grant "every line" either — that's admin-only
+    const deniedAll = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: agentHdr,
+      payload: { lineScope: null },
+    });
+    expect(deniedAll.statusCode).toBe(403);
+
+    // re-affirming a line they do have access to works fine
+    const ok = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: agentHdr,
+      payload: { lineScope: ['Second'] },
+    });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it("only an admin or the list's creator may change its scope — everyone else can still edit its name/members", async () => {
+    await provision('owner@x.com', 'other@x.com');
+    const created = (
+      await t.app.inject({
+        method: 'POST',
+        url: '/api/lists',
+        headers: HDR('owner@x.com'),
+        payload: { name: 'Owned' },
+      })
+    ).json();
+
+    const scopeDenied = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: HDR('other@x.com'),
+      payload: { lineScope: ['Test'] },
+    });
+    expect(scopeDenied.statusCode).toBe(403);
+
+    const nameOk = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: HDR('other@x.com'),
+      payload: { name: 'Renamed', members: [{ recipient: '0521111111' }] },
+    });
+    expect(nameOk.statusCode).toBe(200);
+    expect(nameOk.json()).toMatchObject({ name: 'Renamed', memberCount: 1, lineScope: ['Test'] });
+
+    // the creator themselves may still manage it, within what they can see —
+    // a plain agent with no instance grants only sees the default ('Test')
+    const ownerOk = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: HDR('owner@x.com'),
+      payload: { lineScope: ['Test'] },
+    });
+    expect(ownerOk.statusCode).toBe(200);
+    expect(ownerOk.json().lineScope).toEqual(['Test']);
+
+    // and granted a second line, the owner can widen onto it too
+    await grant('owner@x.com', ['Test', 'Second']);
+    const ownerWidened = await t.app.inject({
+      method: 'PUT',
+      url: `/api/lists/${created.id}`,
+      headers: HDR('owner@x.com'),
+      payload: { lineScope: ['Test', 'Second'] },
+    });
+    expect(ownerWidened.statusCode).toBe(200);
+    expect(ownerWidened.json().lineScope).toEqual(['Test', 'Second']);
+  });
+
+  it('scope=all is the admin roster view; a missing permission falls back to the per-line roster', async () => {
+    await provision('agent@x.com');
+    await grant('agent@x.com', ['Second']);
+    await t.app.inject({ method: 'POST', url: '/api/lists', payload: { name: 'On-Test' } });
+    await t.app.inject({
+      method: 'POST',
+      url: '/api/lists?instance=Second',
+      payload: { name: 'On-Second' },
+    });
+
+    // no ?instance= → falls back to the server default line, same as
+    // quick-replies' identical instanceFilter() convention
+    const agentDefault = (
+      await t.app.inject({ method: 'GET', url: '/api/lists?scope=all', headers: HDR('agent@x.com') })
+    ).json();
+    expect(agentDefault.map((l: any) => l.name)).toEqual(['On-Test']);
+
+    // the real frontend always sends the active line explicitly
+    const agentOwnLine = (
+      await t.app.inject({
+        method: 'GET',
+        url: '/api/lists?scope=all&instance=Second',
+        headers: HDR('agent@x.com'),
+      })
+    ).json();
+    expect(agentOwnLine.map((l: any) => l.name)).toEqual(['On-Second']); // scoped, not everything
+
+    const asAdmin = (
+      await t.app.inject({ method: 'GET', url: '/api/lists?scope=all', headers: HDR('admin@x.com') })
+    ).json();
+    expect(asAdmin.map((l: any) => l.name).sort()).toEqual(['On-Second', 'On-Test']);
+  });
+});
+
 describe('/api/quick-replies', () => {
   let t: TestApp;
   beforeEach(async () => {

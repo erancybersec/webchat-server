@@ -60,6 +60,21 @@ interface ListRow {
   created_at: string;
   member_count: number;
   recipe: string | null;
+  line_scope: string | null;
+  created_by: string | null;
+}
+
+/** Keep well-formed, non-empty, trimmed, de-duplicated instance names. */
+function parseLineScope(v: string | null): string[] | null {
+  if (!v) return null;
+  const arr = safeJson(v);
+  if (!Array.isArray(arr)) return null;
+  const seen = new Set<string>();
+  for (const raw of arr) {
+    const name = String(raw ?? '').trim();
+    if (name) seen.add(name);
+  }
+  return seen.size ? [...seen] : null;
 }
 
 /** Saved audiences: named recipient sets pickable in Compose. */
@@ -73,9 +88,11 @@ export class ListsStore {
       byId: db.prepare(`SELECT l.*, COUNT(m.recipient) AS member_count
         FROM recipient_lists l LEFT JOIN recipient_list_members m ON m.list_id = l.id
         WHERE l.id = ? GROUP BY l.id`),
-      insert: db.prepare(`INSERT INTO recipient_lists (id, name, created_at) VALUES (?, ?, ?)`),
+      insert: db.prepare(`INSERT INTO recipient_lists (id, name, created_at, line_scope, created_by)
+        VALUES (?, ?, ?, ?, ?)`),
       rename: db.prepare(`UPDATE recipient_lists SET name = ? WHERE id = ?`),
       setRecipe: db.prepare(`UPDATE recipient_lists SET recipe = ? WHERE id = ?`),
+      setLineScope: db.prepare(`UPDATE recipient_lists SET line_scope = ? WHERE id = ?`),
       del: db.prepare(`DELETE FROM recipient_lists WHERE id = ?`),
       members: db.prepare(`SELECT recipient, is_group, name FROM recipient_list_members
         WHERE list_id = ? ORDER BY name COLLATE NOCASE, recipient`),
@@ -93,11 +110,18 @@ export class ListsStore {
       createdAt: r.created_at,
       memberCount: r.member_count,
       recipe: parseRecipe(r.recipe, r.id),
+      lineScope: parseLineScope(r.line_scope),
+      createdBy: r.created_by,
     };
   }
 
   all(): RecipientList[] {
     return (this.q.all.all() as ListRow[]).map((r) => this.rowToList(r));
+  }
+
+  /** `all()` filtered to lists visible on the given line (null scope = every line). */
+  allFor(instance: string): RecipientList[] {
+    return this.all().filter((l) => !l.lineScope || l.lineScope.includes(instance));
   }
 
   byId(id: string): RecipientList | null {
@@ -111,9 +135,13 @@ export class ListsStore {
     );
   }
 
-  create(name: string): RecipientList {
+  create(
+    name: string,
+    opts?: { lineScope?: string[] | null; createdBy?: string | null },
+  ): RecipientList {
     const id = `list_${randomUUID()}`;
-    this.q.insert.run(id, name, new Date().toISOString());
+    const lineScope = opts?.lineScope?.length ? JSON.stringify(opts.lineScope) : null;
+    this.q.insert.run(id, name, new Date().toISOString(), lineScope, opts?.createdBy ?? null);
     return this.byId(id)!;
   }
 
@@ -125,6 +153,12 @@ export class ListsStore {
   setRecipe(id: string, recipe: ListRecipe | null): boolean {
     const json = recipe ? JSON.stringify(recipe) : null;
     return this.q.setRecipe.run(json, id).changes > 0;
+  }
+
+  /** Store (or clear, with null = every line) which lines a list is visible on. */
+  setLineScope(id: string, lineScope: string[] | null): boolean {
+    const json = lineScope?.length ? JSON.stringify(lineScope) : null;
+    return this.q.setLineScope.run(json, id).changes > 0;
   }
 
   delete(id: string): boolean {

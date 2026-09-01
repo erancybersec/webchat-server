@@ -274,7 +274,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   registerMeta(app, cfg, { quota: coldQuota, familiarity: familiarityStore });
   // wake: immediate sends / reruns fire on save instead of waiting for the poll
   registerJobs(app, jobs, () => void scheduler.tick(), () => cfg.recurringEnabled, cfg, agents, emit, instanceAccess, lists);
-  registerLists(app, lists);
+  registerLists(app, lists, { cfg, agents, access: instanceAccess });
   registerQuickReplies(app, quickReplies, { cfg, agents });
   registerAnalytics(app, db, guard('insights.view'), { cfg, agents, stats: msgStats });
   registerBlacklist(app, blacklist);

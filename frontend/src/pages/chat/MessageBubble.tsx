@@ -60,6 +60,8 @@ export interface BubbleProps {
   onReact: (msg: ChatMsg, emoji: string) => void;
   onDelete: (msg: ChatMsg) => void;
   onForward: (msg: ChatMsg) => void;
+  /** enter multi-select mode starting with this message checked */
+  onSelect: (msg: ChatMsg) => void;
   /** jump to the quoted message (id of the original) */
   onQuoteClick?: (id: string) => void;
   /** re-send a failed optimistic message */
@@ -192,6 +194,7 @@ export default function MessageBubble({
   onReact,
   onDelete,
   onForward,
+  onSelect,
   onQuoteClick,
   onRetry,
 }: BubbleProps) {
@@ -422,6 +425,7 @@ export default function MessageBubble({
           >
             <button onClick={() => { setMenuOpen(false); onReply(msg); }} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">↩ Reply</button>
             <button onClick={() => { setMenuOpen(false); onForward(msg); }} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">↪ Forward</button>
+            <button onClick={() => { setMenuOpen(false); onSelect(msg); }} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">☑ Select</button>
             {(msg.text || msg.caption) && (
               <button onClick={copyText} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">📋 Copy</button>
             )}

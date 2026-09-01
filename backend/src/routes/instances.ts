@@ -3,7 +3,7 @@ import type { Config } from '../config.js';
 import { emailFromRequest, type AgentsStore } from '../services/agents.js';
 import { can } from '../services/authz.js';
 import type { EvolutionApi } from '../services/evolution.js';
-import type { InstanceAccess, InstancesService } from '../services/instances.js';
+import { SAFE_INSTANCE, type InstanceAccess, type InstancesService } from '../services/instances.js';
 
 /**
  * The Evolution instances visible to the requester — powers the header
@@ -59,6 +59,73 @@ export function registerInstances(
         ...(wantCounts ? { counts: i.counts ?? null, disconnectedAt: i.disconnectedAt ?? null } : {}),
       })),
     };
+  });
+
+  // New channel: create the Evolution instance and return its first QR, same
+  // shape as the reconnect QR endpoint so the frontend can reuse one modal.
+  app.post('/api/instances', { preHandler: requireAdmin }, async (req, reply) => {
+    const b = (req.body ?? {}) as { name?: unknown };
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (!name || !SAFE_INSTANCE.test(name))
+      return reply.code(400).send({ error: 'invalid channel name' });
+    let existing;
+    try {
+      existing = await instances.list();
+    } catch (e) {
+      return reply.code(502).send({ error: String((e as Error).message ?? e) });
+    }
+    if (existing.some((i) => i.name === name))
+      return reply.code(409).send({ error: `a channel named "${name}" already exists` });
+    let r;
+    try {
+      r = await evo.call('/instance/create', {
+        instanceName: name,
+        qrcode: true,
+        integration: 'WHATSAPP-BAILEYS',
+      });
+    } catch (e) {
+      return reply.code(502).send({ error: String((e as Error).message ?? e) });
+    }
+    if (!r.ok) return reply.code(r.status).send({ error: r.text.slice(0, 300) });
+    instances.invalidate();
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(r.text);
+    } catch {
+      // no QR in the response — the frontend's poll/refresh will pick it up
+    }
+    const qr = (data.qrcode ?? {}) as Record<string, unknown>;
+    return {
+      name,
+      base64: typeof qr.base64 === 'string' ? qr.base64 : null,
+      pairingCode: typeof qr.pairingCode === 'string' ? qr.pairingCode : null,
+    };
+  });
+
+  // Permanently remove a channel: logs it out (best-effort) then deletes the
+  // instance and every message/chat/contact Evolution stored for it. The
+  // configured default can't be removed this way — pick a new default first.
+  app.delete('/api/instances/:name', { preHandler: requireAdmin }, async (req, reply) => {
+    const name = namedInst(req, reply);
+    if (!name) return reply;
+    if (name === cfg.evo.instance)
+      return reply
+        .code(400)
+        .send({ error: 'cannot delete the default channel — change it in Settings → Connection first' });
+    try {
+      await evo.call(`/instance/logout/${encodeURIComponent(name)}`, undefined, 'DELETE');
+    } catch {
+      // best-effort — already logged out (or never connected) is fine, delete below still runs
+    }
+    let r;
+    try {
+      r = await evo.call(`/instance/delete/${encodeURIComponent(name)}`, undefined, 'DELETE');
+    } catch (e) {
+      return reply.code(502).send({ error: String((e as Error).message ?? e) });
+    }
+    if (!r.ok) return reply.code(r.status).send({ error: r.text.slice(0, 300) });
+    instances.invalidate();
+    return { ok: true };
   });
 
   // Reconnect flow: fetch a QR (or pairing code) for a disconnected line, then

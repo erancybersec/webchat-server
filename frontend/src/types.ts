@@ -86,7 +86,8 @@ export type PermissionKey =
   | 'agents.manage'
   | 'jobs.sendWithoutApproval'
   | 'jobs.approve'
-  | 'jobs.clearHistory';
+  | 'jobs.clearHistory'
+  | 'lists.manage';
 
 export type Perms = Record<PermissionKey, boolean>;
 
@@ -312,6 +313,10 @@ export interface RecipientList {
   memberCount: number;
   /** null for a hand-made list; set when the members came from other lists. */
   recipe: ListRecipe | null;
+  /** Instance names this list is visible on; null = every line. */
+  lineScope: string[] | null;
+  /** Email of the agent who created it; null = predates this column / agent id off. */
+  createdBy: string | null;
 }
 
 export interface ListMember {

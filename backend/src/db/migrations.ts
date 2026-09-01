@@ -564,4 +564,21 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: '023-list-line-scope',
+    sql: `
+      -- Per-line visibility for saved lists. NULL = visible on every line,
+      -- which is every existing row's behavior today — nothing changes for
+      -- them. A JSON array of instance names restricts the list to just
+      -- those lines. A new list defaults to the line it was created on;
+      -- widening it to specific other lines, or to every line, is gated in
+      -- the route layer by admin/creator + InstanceAccess.
+      ALTER TABLE recipient_lists ADD COLUMN line_scope TEXT;
+
+      -- Who made the list (email) — lets a non-admin manage their own
+      -- list's line_scope. NULL for rows that predate this column and when
+      -- agent identification is off.
+      ALTER TABLE recipient_lists ADD COLUMN created_by TEXT;
+    `,
+  },
 ];

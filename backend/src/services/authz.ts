@@ -14,7 +14,8 @@ export type PermissionKey =
   | 'agents.manage'
   | 'jobs.sendWithoutApproval'
   | 'jobs.approve'
-  | 'jobs.clearHistory';
+  | 'jobs.clearHistory'
+  | 'lists.manage';
 
 export const PERMISSION_KEYS: readonly PermissionKey[] = [
   'settings.manage',
@@ -24,6 +25,7 @@ export const PERMISSION_KEYS: readonly PermissionKey[] = [
   'jobs.sendWithoutApproval',
   'jobs.approve',
   'jobs.clearHistory',
+  'lists.manage',
 ];
 
 const PERMS: Record<PermissionKey, readonly AgentRole[]> = {
@@ -36,6 +38,9 @@ const PERMS: Record<PermissionKey, readonly AgentRole[]> = {
   // bulk-deleting finished/cancelled jobs + their ledger is irreversible —
   // admins only by default.
   'jobs.clearHistory': ['admin'],
+  // Cross-line list visibility + widening a list's line_scope beyond what
+  // the creator themselves can see (including "every line").
+  'lists.manage': ['admin'],
 };
 
 export function roleDefault(role: AgentRole, key: PermissionKey): boolean {

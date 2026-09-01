@@ -14,8 +14,18 @@ function qrSrc(base64: string): string {
 /**
  * Reconnect flow for a disconnected WhatsApp line: fetch a QR from Evolution,
  * show it, and poll the live connection state until the phone links it.
+ * With `create`, it first creates a brand-new Evolution instance named
+ * `name` and shows its first QR — everything after that is identical.
  */
-export default function ConnectLineModal({ name, onClose }: { name: string; onClose: () => void }) {
+export default function ConnectLineModal({
+  name,
+  create = false,
+  onClose,
+}: {
+  name: string;
+  create?: boolean;
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const toast = useToast();
   const [qr, setQr] = useState<string | null>(null);
@@ -23,18 +33,24 @@ export default function ConnectLineModal({ name, onClose }: { name: string; onCl
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
   const closedRef = useRef(false);
+  // the create call must fire only once — later QR refreshes hit the normal
+  // reconnect endpoint against the now-existing instance
+  const createdRef = useRef(false);
 
   async function fetchQr() {
     try {
-      const r = await api.instances.qr(name);
+      const r =
+        create && !createdRef.current ? await api.instances.create(name) : await api.instances.qr(name);
       if (closedRef.current) return;
+      createdRef.current = true;
       setError('');
-      if (r.connected) {
+      if ('connected' in r && r.connected) {
         setConnected(true);
         return;
       }
       setQr(r.base64);
       setPairingCode(r.pairingCode);
+      if (create) qc.invalidateQueries({ queryKey: ['instances'] });
     } catch (e) {
       if (!closedRef.current) setError((e as Error).message || 'Failed to load QR code');
     }
@@ -85,13 +101,13 @@ export default function ConnectLineModal({ name, onClose }: { name: string; onCl
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Reconnect ${name}`}
+        aria-label={create ? `Add channel ${name}` : `Reconnect ${name}`}
         className="animate-pop flex w-full max-w-sm flex-col rounded-xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
           <h3 className="truncate font-semibold text-gray-800" dir="auto">
-            Reconnect “{name}”
+            {create ? `Add channel “${name}”` : `Reconnect “${name}”`}
           </h3>
           <button
             onClick={onClose}

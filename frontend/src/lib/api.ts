@@ -329,26 +329,38 @@ export const api = {
       post<{ ok: boolean; removed: number }>('/api/jobs/bulk-delete', { ids }),
   },
 
+  // Lists are per-line: list filters by the active line, and a new list (with
+  // no explicit lineScope) is pinned to it. Admins can pull every line's
+  // roster with listAll(), the management view.
   lists: {
-    list: () => get<RecipientList[]>('/api/lists'),
+    list: () => iget<RecipientList[]>('/api/lists'),
+    listAll: () => get<RecipientList[]>('/api/lists?scope=all'),
     get: (id: string) =>
       get<RecipientList & { members: ListMember[] }>(`/api/lists/${encodeURIComponent(id)}`),
     // `recipe` rides along with the members it produced (null = a plain list).
+    // `lineScope`: omit to default to the active line; null = every line.
     create: (
       name: string,
       members: Array<Partial<ListMember>> = [],
       recipe: ListRecipe | null = null,
+      lineScope?: string[] | null,
     ) =>
-      post<RecipientList & { members: number; invalid: string[] }>('/api/lists', {
+      ipost<RecipientList & { members: number; invalid: string[] }>('/api/lists', {
         name,
         members,
         recipe,
+        ...(lineScope !== undefined ? { lineScope } : {}),
       }),
     update: (
       id: string,
-      patch: { name?: string; members?: Array<Partial<ListMember>>; recipe?: ListRecipe | null },
+      patch: {
+        name?: string;
+        members?: Array<Partial<ListMember>>;
+        recipe?: ListRecipe | null;
+        lineScope?: string[] | null;
+      },
     ) =>
-      put<RecipientList & { members: number; invalid: string[] }>(
+      iput<RecipientList & { members: number; invalid: string[] }>(
         `/api/lists/${encodeURIComponent(id)}`,
         patch,
       ),
@@ -403,6 +415,9 @@ export const api = {
 
   instances: {
     list: () => get<{ default: string; instances: InstanceInfo[] }>('/api/instances'),
+    create: (name: string) =>
+      post<{ name: string; base64: string | null; pairingCode: string | null }>('/api/instances', { name }),
+    remove: (name: string) => del<{ ok: boolean }>(`/api/instances/${encodeURIComponent(name)}`),
     qr: (name: string) =>
       get<{ connected: boolean; base64: string | null; pairingCode: string | null }>(
         `/api/instances/${encodeURIComponent(name)}/qr`,

@@ -520,7 +520,11 @@ export function registerJobs(
           : `Not sent — ${new Date(job.scheduledAt).toLocaleDateString()} (${unsent.length})`;
       // names come from the job's own recipients, so the list feeds {{name}}
       const named = new Map(job.recipients.map((r) => [r.id, r.name ?? '']));
-      const list = lists.create(name);
+      const eff = job.instance ?? cfg?.evo.instance ?? '';
+      const list = lists.create(name, {
+        lineScope: eff ? [eff] : null,
+        createdBy: agents && cfg?.agentsEnabled ? emailFromRequest(req) || null : null,
+      });
       const saved = lists.setMembers(
         list.id,
         unsent.map((u) => ({ recipient: u.recipient, name: named.get(u.recipient) ?? '' })),
@@ -548,7 +552,11 @@ export function registerJobs(
           ? body.name.trim().slice(0, 120)
           : `${status.charAt(0).toUpperCase()}${status.slice(1)} — ${new Date(job.scheduledAt).toLocaleDateString()} (${recipients.length})`;
       const named = new Map(job.recipients.map((r) => [r.id, r.name ?? '']));
-      const list = lists.create(name);
+      const eff = job.instance ?? cfg?.evo.instance ?? '';
+      const list = lists.create(name, {
+        lineScope: eff ? [eff] : null,
+        createdBy: agents && cfg?.agentsEnabled ? emailFromRequest(req) || null : null,
+      });
       const saved = lists.setMembers(
         list.id,
         recipients.map((u) => ({ recipient: u.recipient, name: named.get(u.recipient) ?? '' })),

@@ -4,6 +4,8 @@ import { useConfirm } from '../components/Confirm';
 import RecipientTableModal from '../components/RecipientTableModal';
 import { useToast } from '../components/Toast';
 import { api } from '../lib/api';
+import { useMe, usePerm } from '../lib/agents';
+import { useActiveInstance, useInstances } from '../lib/instance';
 import {
   EMPTY_RECIPE,
   eligibleSources,
@@ -46,7 +48,15 @@ export default function ListsPage() {
   const qc = useQueryClient();
   const flash = useToast();
   const confirmDlg = useConfirm();
-  const lists = useQuery({ queryKey: ['lists'], queryFn: api.lists.list });
+  // Admins manage every line's lists at once; everyone else sees their own
+  // line's roster (and the server enforces the same on the API).
+  const isAdmin = usePerm('lists.manage') === true;
+  const lists = useQuery({
+    queryKey: ['lists', isAdmin],
+    queryFn: () => (isAdmin ? api.lists.listAll() : api.lists.list()),
+  });
+  const instances = useInstances();
+  const multiLine = (instances.data?.instances.length ?? 0) > 1;
   const [editing, setEditing] = useState<RecipientList | null>(null);
   const [creating, setCreating] = useState(false);
   const [rebuilding, setRebuilding] = useState<string | null>(null);
@@ -174,6 +184,11 @@ export default function ListsPage() {
                   {l.memberCount} member{l.memberCount === 1 ? '' : 's'} · created{' '}
                   {new Date(l.createdAt).toLocaleDateString()}
                 </p>
+                {multiLine && (
+                  <p className="mt-0.5 truncate text-xs text-gray-400">
+                    Visible on: {l.lineScope ? l.lineScope.join(', ') : 'all lines'}
+                  </p>
+                )}
               </div>
               {l.recipe && (
                 <span
@@ -271,6 +286,31 @@ function ListEditor({
 }) {
   const flash = useToast();
   const confirmDlg = useConfirm();
+  const me = useMe();
+  const isAdmin = usePerm('lists.manage') === true;
+  const instances = useInstances();
+  const activeInstance = useActiveInstance();
+  const multiLine = (instances.data?.instances.length ?? 0) > 1;
+  // Agent id off (unrestricted) → everyone manages scope, same as the server.
+  const canManageScope =
+    !list || isAdmin || !me.data?.enabled || (!!me.data.email && list.createdBy === me.data.email);
+  const maySetAllLines = isAdmin || !me.data?.enabled;
+  const currentLine = activeInstance || instances.data?.default || '';
+  const [lineScope, setLineScope] = useState<string[] | null>(
+    list ? list.lineScope : currentLine ? [currentLine] : null,
+  );
+  // Whether the scope control was touched — an untouched new list omits
+  // lineScope from the create call so the server's own default applies, and
+  // an untouched edit omits it too so a non-owner's unrelated edit never
+  // trips the scope-change permission check.
+  const [scopeTouched, setScopeTouched] = useState(false);
+  const toggleLine = (n: string, on: boolean) => {
+    setLineScope((prev) => {
+      const cur = prev ?? [];
+      return on ? [...cur, n] : cur.filter((x) => x !== n);
+    });
+    setScopeTouched(true);
+  };
   const [name, setName] = useState(list?.name ?? '');
   const [mode, setMode] = useState<EditorMode>(list?.recipe ? 'combine' : 'paste');
   const [members, setMembers] = useState<ListMember[]>([]);
@@ -403,8 +443,14 @@ function ListEditor({
         : { members, recipe: null };
     setBusy(true);
     try {
-      if (list) await api.lists.update(list.id, { name: name.trim(), ...payload });
-      else await api.lists.create(name.trim(), payload.members, payload.recipe);
+      if (list)
+        await api.lists.update(list.id, {
+          name: name.trim(),
+          ...payload,
+          ...(scopeTouched ? { lineScope } : {}),
+        });
+      else
+        await api.lists.create(name.trim(), payload.members, payload.recipe, scopeTouched ? lineScope : undefined);
       flash('List saved');
       onSaved();
     } catch (e) {
@@ -455,6 +501,53 @@ function ListEditor({
               className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
             />
           </div>
+
+          {multiLine && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Visible on</label>
+              {!canManageScope ? (
+                <p className="text-sm text-gray-500">
+                  {list?.lineScope ? list.lineScope.join(', ') : 'All lines'} — only an admin or
+                  this list's creator can change this
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {maySetAllLines && (
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={lineScope === null}
+                        onChange={(e) => {
+                          setLineScope(e.target.checked ? null : currentLine ? [currentLine] : []);
+                          setScopeTouched(true);
+                        }}
+                        className="accent-wa"
+                      />
+                      All lines
+                    </label>
+                  )}
+                  {lineScope !== null && (
+                    <div className="flex flex-wrap gap-2">
+                      {(instances.data?.instances ?? []).map((i) => (
+                        <label
+                          key={i.name}
+                          className="flex items-center gap-1.5 rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-700"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={lineScope.includes(i.name)}
+                            onChange={(e) => toggleLine(i.name, e.target.checked)}
+                            className="accent-wa"
+                          />
+                          {i.name}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-1 rounded-lg bg-gray-50 p-1">
             {tab('paste', 'Paste numbers')}

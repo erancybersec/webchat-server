@@ -137,6 +137,9 @@ function InstanceSwitcher({ compact = false }: { compact?: boolean }) {
   const q = useInstances();
   const active = useActiveInstance();
   const [reconnecting, setReconnecting] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState('');
   const def = q.data?.default ?? '';
   const list = q.data?.instances ?? [];
   // an agent granted only non-default lines never reaches the default —
@@ -178,11 +181,21 @@ function InstanceSwitcher({ compact = false }: { compact?: boolean }) {
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
 
-  // hidden with one visible line — unless that line isn't the default, in
-  // which case the chip tells the agent which line they're on
-  if (list.length < 2 && defaultVisible) return null;
-  if (!list.length) return null;
+  // hidden with one visible line — unless that line isn't the default (the
+  // chip then tells the agent which line they're on) or the agent is an
+  // admin, who still needs the dropdown to reach "Add channel"
+  if (!isAdmin && list.length < 2 && defaultVisible) return null;
+  if (!isAdmin && !list.length) return null;
   const connected = list.find((i) => i.name === current)?.connectionStatus === 'open';
+
+  async function submitNewChannel() {
+    const name = newName.trim();
+    if (!name) return;
+    setAdding(false);
+    setNewName('');
+    setOpen(false);
+    setCreating(name);
+  }
 
   function pick(name: string) {
     setOpen(false);
@@ -260,9 +273,50 @@ function InstanceSwitcher({ compact = false }: { compact?: boolean }) {
               </div>
             );
           })}
+          {isAdmin && (
+            <div className="border-t border-gray-100 px-3 pt-1.5 pb-1">
+              {adding ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submitNewChannel();
+                  }}
+                  className="flex items-center gap-1"
+                >
+                  <input
+                    autoFocus
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Escape' && setAdding(false)}
+                    placeholder="Channel name"
+                    aria-label="New channel name"
+                    className="min-w-0 flex-1 rounded border border-gray-300 px-1.5 py-1 text-xs"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newName.trim()}
+                    className="shrink-0 rounded bg-wa px-2 py-1 text-[11px] font-medium text-white hover:bg-wa-dark disabled:opacity-40"
+                  >
+                    Add
+                  </button>
+                </form>
+              ) : (
+                <button
+                  onClick={() => setAdding(true)}
+                  className="flex w-full items-center gap-1.5 rounded px-0 py-1 text-xs font-medium text-wa-dark hover:text-wa"
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  Add channel
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
       {reconnecting && <ConnectLineModal name={reconnecting} onClose={() => setReconnecting('')} />}
+      {creating && <ConnectLineModal name={creating} create onClose={() => setCreating('')} />}
     </div>
   );
 }

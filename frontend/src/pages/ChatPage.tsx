@@ -139,6 +139,18 @@ const sameDay = (aSec: number, bSec: number): boolean =>
 /** messages this close together (and same sender) render as one visual group */
 const GROUP_GAP_S = 300;
 
+/** short label for a media message with no caption, used in the "select messages → copy" text block */
+const MEDIA_COPY_LABELS: Record<string, string> = {
+  image: '📷 Photo',
+  video: '🎥 Video',
+  audio: '🎤 Voice message',
+  document: '📄 Document',
+  sticker: '🏷 Sticker',
+  location: '📍 Location',
+  contact: '👤 Contact',
+  poll: '📊 Poll',
+};
+
 /** WhatsApp-style animated "typing" dots. */
 function TypingDots() {
   return (
@@ -449,6 +461,27 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
   const [menuOpen, setMenuOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
   const [blDialog, setBlDialog] = useState(false);
+  // WhatsApp-style "select messages" mode: pick multiple bubbles, then copy
+  // them as one block of "date/time - who: text" lines.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+  /** right-click "Select" on a message: enter select mode with just that one checked */
+  function startSelectingFrom(id: string) {
+    setSelectMode(true);
+    setSelectedIds(new Set([id]));
+  }
   const [blocked, setBlocked] = useState(false);
   // is this contact on the send-time blacklist? (shared cache with Compose)
   const blacklist = useQuery({
@@ -1184,6 +1217,55 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
     setBlocked(!blocked);
   }
 
+  /** who sent it: "You", the group sender's name/number, or the contact's name/number. */
+  function messageWho(m: ChatMsg): string {
+    if (m.fromMe) return 'You';
+    if (conv.isGroup) {
+      return (
+        m.pushName?.trim() ||
+        (m.senderJid ? resolveName(m.senderJid, names, aliases) : '') ||
+        'Unknown'
+      );
+    }
+    return conv.name || displayConvNumber(conv);
+  }
+
+  /** plain-text content for a copied line — media/poll get a short label instead of raw markup. */
+  function messageCopyText(m: ChatMsg): string {
+    if (m.deletedBySender) return 'This message was deleted';
+    if (m.type === 'poll') return `📊 ${m.text}`;
+    if (m.hasMedia) {
+      const label = MEDIA_COPY_LABELS[m.type] || '📎 Attachment';
+      return m.caption ? `${label} — ${m.caption}` : label;
+    }
+    return m.text || m.caption || '';
+  }
+
+  async function copySelected() {
+    const chosen = visible
+      .filter((m) => selectedIds.has(m.id))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    const lines = chosen.map((m) => {
+      const when = m.timestamp
+        ? new Date(m.timestamp * 1000).toLocaleString([], {
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : '';
+      return `${when} - ${messageWho(m)}: ${messageCopyText(m)}`;
+    });
+    try {
+      await navigator.clipboard?.writeText(lines.join('\n'));
+      toast(`Copied ${chosen.length} message${chosen.length === 1 ? '' : 's'}`);
+    } catch {
+      toast('Could not copy — clipboard unavailable', 'err');
+    }
+    exitSelectMode();
+  }
+
   // quick replies: "/" at the start of the draft opens the picker
   const qrQuery = draft.startsWith('/') ? draft.slice(1).toLowerCase() : null;
   const qrMatches =
@@ -1300,6 +1382,15 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
               <button onClick={() => void markUnread()} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">
                 Mark as unread
               </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setSelectMode(true);
+                }}
+                className="block w-full px-3 py-1.5 text-left hover:bg-gray-50"
+              >
+                Select messages
+              </button>
               <button onClick={() => void onArchived()} className="block w-full px-3 py-1.5 text-left hover:bg-gray-50">
                 Archive chat
               </button>
@@ -1356,6 +1447,30 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
       )}
 
       <WorkbenchBar jid={canon} meta={chatMeta.data} others={othersHere} />
+
+      {selectMode && (
+        <div className="flex items-center gap-2 border-b border-gray-200 bg-white px-3 py-1.5">
+          <button
+            onClick={exitSelectMode}
+            aria-label="Cancel selection"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100"
+          >
+            ✕
+          </button>
+          <span className="flex-1 text-sm text-gray-600">
+            {selectedIds.size ? `${selectedIds.size} selected` : 'Tap messages to select'}
+          </span>
+          <button
+            onClick={() => void copySelected()}
+            disabled={!selectedIds.size}
+            title="Copy selected messages"
+            aria-label="Copy selected messages"
+            className="flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium text-wa-dark hover:bg-gray-100 disabled:opacity-40"
+          >
+            📋 Copy
+          </button>
+        </div>
+      )}
 
       {searchOpen && (
         <div className="flex items-center gap-2 border-b border-gray-200 bg-white px-3 py-1.5">
@@ -1475,10 +1590,22 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
               )}
               <div
                 id={`msg-${m.id}`}
-                className={`transition-shadow ${
+                className={`flex items-center gap-2 transition-shadow ${
                   m.id === currentMatch || m.id === flashId ? 'rounded-lg ring-2 ring-amber-400' : ''
-                }`}
+                } ${selectMode ? 'cursor-pointer' : ''}`}
+                onClick={selectMode ? () => toggleSelected(m.id) : undefined}
               >
+                {selectMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(m.id)}
+                    onChange={() => toggleSelected(m.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label="Select message"
+                    className="h-4 w-4 shrink-0 accent-wa"
+                  />
+                )}
+                <div className={selectMode ? 'min-w-0 flex-1 [&_.group]:pointer-events-none' : 'min-w-0 flex-1'}>
                 <MessageBubble
                   msg={m}
                   groupStart={!grouped}
@@ -1514,8 +1641,10 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                   onReact={react}
                   onDelete={(msg) => void deleteMessage(msg)}
                   onForward={setForwardMsg}
+                  onSelect={(msg) => startSelectingFrom(msg.id)}
                   onRetry={retrySend}
                 />
+                </div>
               </div>
             </div>
           );
@@ -1994,6 +2123,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
   // long-press (mobile). Pinned to the pointer; `longPressed` suppresses the
   // tap that would otherwise open the chat right after a long-press.
   const [rowMenu, setRowMenu] = useState<{ conv: Conv; x: number; y: number } | null>(null);
+  const [rowBlDialog, setRowBlDialog] = useState<Conv | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const longPressed = useRef(false);
   const longPressStart = useRef<{ x: number; y: number } | null>(null);
@@ -2432,8 +2562,32 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
                 Archive chat
               </button>
             )}
+            {!rowMenu.conv.isGroup && (
+              <button
+                onClick={() => {
+                  const c = rowMenu.conv;
+                  setRowMenu(null);
+                  setRowBlDialog(c);
+                }}
+                title="Campaigns skip this number — this chat keeps working"
+                className="block w-full px-3 py-1.5 text-left hover:bg-gray-50"
+              >
+                Add to blacklist…
+              </button>
+            )}
           </div>
         </>
+      )}
+      {rowBlDialog && (
+        <BlacklistAddDialog
+          phone={displayConvNumber(rowBlDialog)}
+          name={
+            rowBlDialog.name.replace(/\D/g, '') === displayConvNumber(rowBlDialog).replace(/\D/g, '')
+              ? ''
+              : rowBlDialog.name
+          }
+          onClose={() => setRowBlDialog(null)}
+        />
       )}
       {active ? (
         <Thread
