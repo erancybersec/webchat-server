@@ -60,6 +60,9 @@ export interface BatchRule {
   /** Per-compose override of the line's cold-contact ceiling for this run only — a
    *  flat daily cap, replacing the warm-up ramp outright. Presence = override is on. */
   coldCap?: { dailyCap: number };
+  /** Per-compose override of the delay between messages for this run only, in
+   *  seconds — replaces the Settings default outright. Presence = override is on. */
+  delay?: { minSec: number; maxSec: number };
 }
 
 /** Wire shape of a job (what clients read/write). */

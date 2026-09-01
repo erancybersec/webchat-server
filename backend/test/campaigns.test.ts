@@ -93,6 +93,29 @@ describe('campaign control (batching, pause, continue)', () => {
     expect(evo.sentTo()).toHaveLength(2);
   });
 
+  it("uses the job's own delay override instead of the Settings default", async () => {
+    // a Settings default fat enough that the test would time out if it were
+    // used instead of the job's own override below
+    const slowDefault = new Scheduler(
+      jobs,
+      new Sender(evo, new BlacklistStore(db)),
+      { pollMs: 60_000, delayMinMs: 5_000, delayMaxMs: 5_000, maxOverdueMin: 0, sendMaxAttempts: 3 },
+      () => {},
+    );
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: five,
+      items: [textItem],
+      batch: { pauseMin: 0, delay: { minSec: 0, maxSec: 0 } },
+    });
+
+    const started = Date.now();
+    await slowDefault.tick();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(evo.sentTo()).toHaveLength(5);
+  });
+
   it('waits for a human when the batch pause is 0 ("send X, then wait for me")', async () => {
     jobs.upsert({
       id: 'j1',
@@ -597,9 +620,15 @@ describe('campaign control API', () => {
     ).json();
     expect(coldCapOnly.batch).toEqual({ pauseMin: 0, coldCap: { dailyCap: 25 } });
 
+    // a delay override alone is also a perfectly good rule — no size, hour, or cap needed
+    const delayOnly = (
+      await post('/api/jobs', { ...base, batch: { pauseMin: 0, delay: { minSec: 5, maxSec: 10 } } })
+    ).json();
+    expect(delayOnly.batch).toEqual({ pauseMin: 0, delay: { minSec: 5, maxSec: 10 } });
+
     for (const batch of [
       { size: 0 },
-      {}, // paces nothing: no size, no hour, no cold-cap override
+      {}, // paces nothing: no size, no hour, no cold-cap or delay override
       { pauseMin: 30 }, // ditto — a wait with nothing to wait between
       { size: 1.5 },
       { size: 10, pauseMin: -1 },
@@ -611,6 +640,8 @@ describe('campaign control API', () => {
       { size: 10, pauseMin: 20, pauseMinMax: 20 }, // not a real range
       { size: 10, pauseMin: 30, coldCap: { dailyCap: 0 } },
       { size: 10, pauseMin: 30, coldCap: { dailyCap: -1 } },
+      { size: 10, pauseMin: 30, delay: { minSec: -1, maxSec: 5 } }, // min below 0
+      { size: 10, pauseMin: 30, delay: { minSec: 10, maxSec: 5 } }, // max below min
       'nope',
     ]) {
       const res = await post('/api/jobs', { ...base, batch });

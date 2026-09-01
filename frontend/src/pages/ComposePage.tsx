@@ -69,9 +69,14 @@ export default function ComposePage() {
   // 3. Advanced: override this line's cold-contact cap for this send only —
   // collapsed unless a loaded draft already carries one, so it stays out of
   // the way for the common case
-  const [advancedOpen, setAdvancedOpen] = useState(!!draft?.batch?.coldCap);
+  const [advancedOpen, setAdvancedOpen] = useState(!!draft?.batch?.coldCap || !!draft?.batch?.delay);
   const [coldCapOn, setColdCapOn] = useState(!!draft?.batch?.coldCap);
   const [coldCapDaily, setColdCapDaily] = useState(String(draft?.batch?.coldCap?.dailyCap ?? 50));
+  // 4. Advanced: override this send's delay between messages, in place of the
+  // Settings default
+  const [delayOverrideOn, setDelayOverrideOn] = useState(!!draft?.batch?.delay);
+  const [delayMinOverride, setDelayMinOverride] = useState(String(draft?.batch?.delay?.minSec ?? 1));
+  const [delayMaxOverride, setDelayMaxOverride] = useState(String(draft?.batch?.delay?.maxSec ?? 3));
   const [feedback, setFeedback] = useState('');
   // set alongside `feedback` when the message is about a specific paused
   // campaign, so the line can offer a straight jump to its live progress
@@ -117,7 +122,11 @@ export default function ComposePage() {
   // has to keep its shape (the server refuses an added or removed item).
   const partlySent = !!draft?.partlySent;
   const messages = recipients.length * items.length;
-  const avgDelaySec = ((settings.data?.delayMin ?? 1) + (settings.data?.delayMax ?? 3)) / 2;
+  const delayMinNum = Math.max(0, Number(delayMinOverride) || 0);
+  const delayMaxNum = Math.max(delayMinNum, Number(delayMaxOverride) || delayMinNum);
+  const avgDelaySec = delayOverrideOn
+    ? (delayMinNum + delayMaxNum) / 2
+    : ((settings.data?.delayMin ?? 1) + (settings.data?.delayMax ?? 3)) / 2;
   // the server's zone + its current clock, shown next to the window's hours
   const serverZone = settings.data
     ? `${settings.data.timezone}, now ${new Date(settings.data.serverTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
@@ -125,7 +134,7 @@ export default function ComposePage() {
 
   /** undefined = leave the job's pacing alone; null = clear it. */
   function batchRule(): BatchRule | null | undefined {
-    if (!windowOn && !batchOn && !coldCapOn) return partlySent ? undefined : null;
+    if (!windowOn && !batchOn && !coldCapOn && !delayOverrideOn) return partlySent ? undefined : null;
     const rule: BatchRule = {
       pauseMin: batchOn && batchAuto ? Math.max(0, Math.round(Number(batchPauseMin) || 0)) : 0,
     };
@@ -141,9 +150,10 @@ export default function ComposePage() {
       if (autoResume) rule.resumeAt = resumeAt;
     }
     if (coldCapOn) rule.coldCap = { dailyCap: coldCapDailyNum };
+    if (delayOverrideOn) rule.delay = { minSec: delayMinNum, maxSec: delayMaxNum };
     return rule;
   }
-  const rule = windowOn || batchOn || coldCapOn ? (batchRule() ?? null) : null;
+  const rule = windowOn || batchOn || coldCapOn || delayOverrideOn ? (batchRule() ?? null) : null;
   // an honest finish moment even for an unbroken run — Compose shouldn't ever
   // say nothing about when a send will be done, paced or not
   const est = messages > 0 ? estimateFinish(rule ?? { pauseMin: 0 }, messages, avgDelaySec) : null;
@@ -455,7 +465,7 @@ export default function ComposePage() {
             )}
           </div>
 
-          {/* 3 — Advanced, collapsed: per-compose cold-contact cap override */}
+          {/* 3 — Advanced, collapsed: per-compose cold-contact cap and delay overrides */}
           <div className="space-y-1.5 border-t border-gray-200 pt-2">
             <button
               type="button"
@@ -488,6 +498,40 @@ export default function ComposePage() {
                       className="w-20 rounded-lg border border-gray-300 px-2 py-1 text-sm"
                     />
                     <span>first-time contacts per day, for this send only</span>
+                  </div>
+                )}
+                <label className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={delayOverrideOn}
+                    onChange={(e) => setDelayOverrideOn(e.target.checked)}
+                    className="h-4 w-4 accent-wa"
+                  />
+                  <span className="font-medium text-gray-700">
+                    Override the delay between messages for this send
+                  </span>
+                </label>
+                {delayOverrideOn && (
+                  <div className="flex flex-wrap items-center gap-2 pl-6 text-xs text-gray-600">
+                    <span>Wait</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={delayMinOverride}
+                      onChange={(e) => setDelayMinOverride(e.target.value)}
+                      className="w-16 rounded-lg border border-gray-300 px-2 py-1 text-sm"
+                    />
+                    <span>to</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={delayMaxOverride}
+                      onChange={(e) => setDelayMaxOverride(e.target.value)}
+                      className="w-16 rounded-lg border border-gray-300 px-2 py-1 text-sm"
+                    />
+                    <span>seconds between messages, instead of the Settings default</span>
                   </div>
                 )}
               </div>

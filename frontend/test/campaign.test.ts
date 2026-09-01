@@ -141,6 +141,12 @@ describe('pacing read-back in Compose', () => {
     );
   });
 
+  it('has no window or batch clause when only an advanced override is on', () => {
+    expect(batchSummary({ pauseMin: 0, delay: { minSec: 5, maxSec: 10 } }, 1000, 7.5, NOW)).toBe(
+      '1,000 messages — about 2h 5m of sending',
+    );
+  });
+
   it('says a window with no continue-time waits for a human', () => {
     expect(batchSummary({ pauseMin: 0, pauseAt: '21:00' }, 1000, 2, NOW)).toContain(
       'waits for your Continue',

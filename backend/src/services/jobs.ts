@@ -165,9 +165,9 @@ function parseBatch(raw: string | null): BatchRule | null {
   try {
     const b = JSON.parse(raw) as BatchRule;
     // a rule is meaningful with a batch size, a clock cutoff, a per-compose
-    // cold-cap override, or any combination of the three
+    // cold-cap override, a per-compose delay override, or any combination
     const sized = Number.isFinite(b?.size) && (b.size as number) > 0;
-    return b && (sized || typeof b.pauseAt === 'string' || !!b.coldCap) ? b : null;
+    return b && (sized || typeof b.pauseAt === 'string' || !!b.coldCap || !!b.delay) ? b : null;
   } catch {
     return null;
   }

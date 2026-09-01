@@ -535,7 +535,7 @@ export class Scheduler {
           break;
         }
         const last = i === pending.length - 1;
-        if (!last && paced) await sleep(this.randomDelayMs());
+        if (!last && paced) await sleep(this.randomDelayMs(batch));
       }
       // Everyone reachable today has been reached; the rest are strangers over
       // the ration. Hand them to tomorrow rather than the attempt-cap, which
@@ -683,8 +683,9 @@ export class Scheduler {
     }
   }
 
-  private randomDelayMs(): number {
-    const { delayMinMs, delayMaxMs } = this.cfg;
+  private randomDelayMs(batch: BatchRule | null): number {
+    const delayMinMs = batch?.delay ? batch.delay.minSec * 1000 : this.cfg.delayMinMs;
+    const delayMaxMs = batch?.delay ? batch.delay.maxSec * 1000 : this.cfg.delayMaxMs;
     return Math.max(0, Math.random() * (delayMaxMs - delayMinMs) + delayMinMs);
   }
 

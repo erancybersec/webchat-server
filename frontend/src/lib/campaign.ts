@@ -209,7 +209,8 @@ export function batchSummary(
   // separate finish clause needed here, the "about X of sending" total says it.
   if (!rule.size) {
     const runMinutes = est?.totalMinutes ?? (messages * avgDelaySec) / 60;
-    return `${head} — ${window} · about ${humanMinutes(runMinutes)} of sending`;
+    const sending = `about ${humanMinutes(runMinutes)} of sending`;
+    return window ? `${head} — ${window} · ${sending}` : `${head} — ${sending}`;
   }
   const batches = Math.max(1, Math.ceil(messages / rule.size));
   const batchPart =

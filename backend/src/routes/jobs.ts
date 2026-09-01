@@ -73,7 +73,10 @@ function parseBatch(value: unknown): BatchRule | null | undefined | 'invalid' {
   if (value === undefined) return undefined;
   if (value === null) return null;
   if (typeof value !== 'object') return 'invalid';
-  const { size, pauseMin, pauseAt, resumeAt, pauseMinMax, coldCap } = value as Record<string, unknown>;
+  const { size, pauseMin, pauseAt, resumeAt, pauseMinMax, coldCap, delay } = value as Record<
+    string,
+    unknown
+  >;
   // A batch size is optional: a rule may be nothing but a sending window
   // ("run until 21:00, continue at 09:00"), which is the control most campaigns
   // actually want — batching is the extra, not the point.
@@ -114,8 +117,16 @@ function parseBatch(value: unknown): BatchRule | null | undefined | 'invalid' {
     if (!Number.isInteger(dailyCap) || (dailyCap as number) < 1) return 'invalid';
     out.coldCap = { dailyCap: dailyCap as number };
   }
-  // ...and a rule that paces nothing — no batching, no hour, no cap override — is not one
-  if (!out.size && !out.pauseAt && !out.coldCap) return 'invalid';
+  // per-compose delay override: this run's own gap between messages, in seconds
+  if (delay !== undefined && delay !== null) {
+    if (typeof delay !== 'object') return 'invalid';
+    const { minSec, maxSec } = delay as Record<string, unknown>;
+    if (typeof minSec !== 'number' || !Number.isFinite(minSec) || minSec < 0) return 'invalid';
+    if (typeof maxSec !== 'number' || !Number.isFinite(maxSec) || maxSec < minSec) return 'invalid';
+    out.delay = { minSec, maxSec };
+  }
+  // ...and a rule that paces nothing — no batching, no hour, no cap or delay override — is not one
+  if (!out.size && !out.pauseAt && !out.coldCap && !out.delay) return 'invalid';
   return out;
 }
 
@@ -262,7 +273,7 @@ export function registerJobs(
     if (batch === 'invalid')
       return reply.code(400).send({
         error:
-          'batch must be { size?: >=1, pauseMin?: 0..10080, pauseMinMax?: >pauseMin, pauseAt?: "HH:MM", resumeAt?: "HH:MM", coldCap?: { dailyCap: >=1 } } — needs a size, a pauseAt, or a coldCap; resumeAt needs pauseAt; pauseMinMax needs pauseMin > 0',
+          'batch must be { size?: >=1, pauseMin?: 0..10080, pauseMinMax?: >pauseMin, pauseAt?: "HH:MM", resumeAt?: "HH:MM", coldCap?: { dailyCap: >=1 }, delay?: { minSec: >=0, maxSec: >=minSec } } — needs a size, a pauseAt, a coldCap, or a delay; resumeAt needs pauseAt; pauseMinMax needs pauseMin > 0',
       });
 
     const repeat = parseRepeat(b.repeat);
