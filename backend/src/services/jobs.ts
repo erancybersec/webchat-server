@@ -295,11 +295,11 @@ export class JobStore {
       // resumes after a pause keeps its original stamp, which is what tells the
       // overdue guard it is half-sent work rather than a job that never fired.
       markRunning: db.prepare(
-        `UPDATE jobs SET status='running', started_at=COALESCE(started_at, ?), hold_reason=NULL
+        `UPDATE jobs SET status='running', started_at=COALESCE(started_at, ?), hold_reason=NULL, result=NULL
          WHERE id=? AND status='pending' AND scheduled_at<=?`,
       ),
       markRunningWithHeld: db.prepare(
-        `UPDATE jobs SET status='running', started_at=COALESCE(started_at, ?), hold_reason=NULL
+        `UPDATE jobs SET status='running', started_at=COALESCE(started_at, ?), hold_reason=NULL, result=NULL
          WHERE id=? AND status IN ('pending','pending_approval') AND scheduled_at<=?`,
       ),
       // a user's cancel (or pause) must never be overwritten by done/failed/
