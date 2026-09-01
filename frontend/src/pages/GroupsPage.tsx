@@ -29,6 +29,15 @@ function groupName(groups: Array<Record<string, any>>, jid: string): string {
   return groups.find((g) => g.id === jid)?.subject ?? jid;
 }
 
+/** A group participant's `id` is often a `@lid` (WhatsApp's opaque internal
+ *  id, not a phone number) — Evolution carries the real number alongside as
+ *  `phoneNumber`. Prefer that; fall back to `id` for participants that only
+ *  have one. */
+function participantNumber(p: Record<string, any>): string {
+  const real = p.phoneNumber ?? p.pn;
+  return displayNumber(String(real || p.id || ''));
+}
+
 /** Alphabetical by subject (Hebrew-aware), falling back to the jid. */
 function sortGroups(list: Array<Record<string, any>>): Array<Record<string, any>> {
   return [...list].sort((a, b) =>
@@ -272,9 +281,8 @@ function ExtractNumbersModal({
             (info as any)?.participants ?? (Array.isArray(info) ? (info[0] as any)?.participants : null) ?? [];
           const name = groupName(groups, jid);
           for (const p of participants) {
-            const pid = String(p.id ?? '');
-            if (!pid) continue;
-            const number = displayNumber(pid);
+            if (!p.id) continue;
+            const number = participantNumber(p);
             const entry = byNumber.get(number) ?? { number, groupNames: new Set<string>() };
             entry.groupNames.add(name);
             byNumber.set(number, entry);
@@ -776,7 +784,7 @@ function SingleGroupPanel({ jid, name, onLeft }: { jid: string; name: string; on
                       </span>
                     )}
                     <span className={`font-mono ${memberName ? 'text-gray-400' : ''}`}>
-                      {displayNumber(pid)}
+                      {participantNumber(p)}
                     </span>
                   </span>
                   <span className="shrink-0 text-gray-400">
