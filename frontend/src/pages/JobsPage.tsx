@@ -37,6 +37,12 @@ const statusLabel = (s: JobStatus): string => STATUS_LABEL[s] ?? s;
 
 const ALL_STATUSES = Object.keys(STATUS_STYLE) as JobStatus[];
 const RESENDABLE: readonly JobStatus[] = ['done', 'failed', 'cancelled', 'missed'];
+// "Edit & resend" (edit, then clone into a fresh job/ledger for the WHOLE
+// original audience) is also offered on a paused campaign — the operator's
+// deliberate alternative to Continue/Edit remaining. The plain one-click
+// "Resend" (no edit step) stays off 'paused': too easy to fire by mistake on
+// a campaign that is still actively mid-run.
+const EDIT_AND_RESENDABLE: readonly JobStatus[] = [...RESENDABLE, 'paused'];
 /** Statuses whose job is edited IN PLACE (rather than copied into a new one). */
 const EDIT_IN_PLACE: readonly JobStatus[] = ['pending', 'paused'];
 
@@ -725,10 +731,10 @@ function JobRow({
     });
   }
   // "Edit & resend" always clones into a brand-new job/ledger for the WHOLE
-  // original audience — offered alongside "Edit remaining" on a failed/missed
-  // job with untried rows, so the operator picks: continue this one, or start
-  // fresh and re-message everyone.
-  if (RESENDABLE.includes(job.status)) {
+  // original audience — offered alongside "Edit remaining" on a paused (or
+  // failed/missed-with-untried-rows) job, so the operator picks: continue
+  // this one for just the rest, or start fresh and re-message everyone.
+  if (EDIT_AND_RESENDABLE.includes(job.status)) {
     actions.push({
       key: 'edit-resend',
       label: 'Edit & resend',
