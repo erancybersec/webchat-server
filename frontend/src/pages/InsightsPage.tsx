@@ -1,31 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { agentBadgeClass, agentLabel, useIsAdmin, usePerm } from '../lib/agents';
+import { agentBadgeClass, agentLabel, usePerm } from '../lib/agents';
 import { api, type AnalyticsRange } from '../lib/api';
-import { useConfirm } from '../components/Confirm';
-import { useToast } from '../components/Toast';
-import type { AgentInsightsRow, AnalyticsSummary, MaintenanceReport } from '../types';
+import type { AgentInsightsRow, AnalyticsSummary } from '../types';
 
 // Today + the usual presets. `1` resolves to days=1 server-side (today only).
 const RANGES = [1, 7, 30, 90] as const;
 
-/**
- * Rough disk footprint of a stored WhatsApp message on the Evolution Postgres,
- * measured on the studio server (Message table ≈ 402 MB for ≈ 238k messages →
- * ~1.7 KB each, payload + indexes). Only ever shown as an "≈" estimate — the
- * webchat backend can't read Evolution's table sizes directly.
- */
-const AVG_MSG_BYTES = 1740;
-
 const fmtNum = (n: number): string =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n.toLocaleString();
-
-function fmtBytes(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(0)} KB`;
-  return `${n} B`;
-}
 
 /** Human duration from seconds: "4.2s", "3m 10s", "1.5h". */
 function fmtDuration(sec: number | null | undefined): string {
@@ -495,172 +478,6 @@ function AgentActivity({ range, mineOnly }: { range: AnalyticsRange; mineOnly: b
   );
 }
 
-/** Disk / DB / Evolution storage telemetry + retention status (admins). */
-function ServerHealth() {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const confirm = useConfirm();
-  const isAdmin = useIsAdmin();
-  const q = useQuery({
-    queryKey: ['maintenance'],
-    queryFn: api.maintenance.get,
-    staleTime: 60_000,
-    retry: 1,
-  });
-  const del = useMutation({
-    mutationFn: (name: string) => api.instances.remove(name),
-    onSuccess: (_r, name) => {
-      toast(`Deleted “${name}” and its stored history`, 'ok');
-      qc.invalidateQueries({ queryKey: ['maintenance'] });
-      qc.invalidateQueries({ queryKey: ['instances'] });
-    },
-    onError: (e) => toast((e as Error).message || 'Failed to delete channel', 'err'),
-  });
-  async function deleteChannel(name: string, isDefault: boolean) {
-    if (isDefault) {
-      toast('Change the default channel in Settings → Connection before deleting it', 'err');
-      return;
-    }
-    const ok = await confirm({
-      title: `Delete “${name}”?`,
-      body: 'This permanently deletes the channel and every WhatsApp message, chat and contact it stored on the Evolution server. This cannot be undone.',
-      confirmLabel: 'Delete',
-      danger: true,
-    });
-    if (ok) del.mutate(name);
-  }
-  if (q.isLoading) return <p className="py-6 text-center text-sm text-gray-400">Loading…</p>;
-  if (q.isError)
-    return (
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <h3 className="mb-2 text-sm font-semibold text-gray-700">Server health</h3>
-        <p role="alert" className="text-sm text-red-500">{(q.error as Error).message}</p>
-      </div>
-    );
-  const d = q.data as MaintenanceReport;
-  const usedPct = d.disk ? Math.round(((d.disk.totalBytes - d.disk.freeBytes) / d.disk.totalBytes) * 100) : null;
-  const diskLow = d.disk != null && (usedPct! >= 85 || d.disk.freeBytes < 10e9);
-  const deadInstances = (d.evolution ?? []).filter((i) => i.connectionStatus !== 'open');
-  return (
-    <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <h3 className="text-sm font-semibold text-gray-700">Server health & storage</h3>
-
-      {diskLow && (
-        <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-600">
-          ⚠ Disk is filling up — {fmtBytes(d.disk!.freeBytes)} free. Consider running a cleanup in
-          Settings → Maintenance.
-        </p>
-      )}
-
-      {d.disk && (
-        <div>
-          <div className="mb-1 flex justify-between text-xs text-gray-500">
-            <span>Server disk</span>
-            <span>
-              {fmtBytes(d.disk.totalBytes - d.disk.freeBytes)} used of {fmtBytes(d.disk.totalBytes)} ({usedPct}%)
-            </span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-gray-100">
-            <div
-              className={`h-full rounded-full ${diskLow ? 'bg-red-500' : usedPct! >= 70 ? 'bg-amber-400' : 'bg-wa'}`}
-              style={{ width: `${usedPct}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="grid gap-2 text-sm sm:grid-cols-2">
-        <div className="rounded-lg bg-gray-50 px-3 py-2">
-          <p className="text-xs text-gray-400">App database</p>
-          <p className="font-medium text-gray-700">
-            {fmtBytes(d.db.sizeBytes)}
-            {d.db.walBytes > 0 && <span className="text-xs text-gray-400"> +{fmtBytes(d.db.walBytes)} WAL</span>}
-          </p>
-          <p className="text-xs text-gray-500">
-            {fmtNum(d.tables.jobs ?? 0)} jobs · {fmtNum(d.tables.job_sends ?? 0)} ledger rows ·{' '}
-            {fmtNum(d.tables.message_agents ?? 0)} attributions
-          </p>
-        </div>
-        <div className="rounded-lg bg-gray-50 px-3 py-2">
-          <p className="text-xs text-gray-400">History retention</p>
-          <p className="font-medium text-gray-700">
-            {d.retentionDays > 0 ? `auto-purge after ${d.retentionDays} days` : 'off — history kept forever'}
-          </p>
-          <p className="text-xs text-gray-500">configure under Settings → Maintenance</p>
-        </div>
-      </div>
-
-      <div>
-        <p className="mb-1 text-xs text-gray-400">WhatsApp messages stored on the Evolution server (per channel)</p>
-        {d.evolutionError ? (
-          <p className="text-sm text-red-500">Evolution unreachable — {d.evolutionError}</p>
-        ) : (
-          <ul className="space-y-1 text-sm">
-            {(d.evolution ?? []).map((i) => {
-              const isDefault = i.name === d.defaultInstance;
-              return (
-                <li key={i.name} className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-1.5 text-gray-600">
-                    <span
-                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${i.connectionStatus === 'open' ? 'bg-wa' : 'bg-red-500'}`}
-                    />
-                    <span className="truncate">{i.name}</span>
-                    {isDefault && <span className="shrink-0 text-[10px] text-gray-400">(default)</span>}
-                    {i.connectionStatus !== 'open' && (
-                      <span className="shrink-0 text-xs text-red-500">
-                        disconnected{i.disconnectedAt ? ` since ${new Date(i.disconnectedAt).toLocaleDateString()}` : ''}
-                      </span>
-                    )}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <span className="text-right text-gray-700">
-                      {i.counts ? (
-                        <>
-                          {fmtNum(i.counts.messages)} msgs · {fmtNum(i.counts.chats)} chats
-                          <span
-                            className="block text-[10px] text-gray-400"
-                            title={`Estimated at ~${AVG_MSG_BYTES} bytes per stored message`}
-                          >
-                            ≈ {fmtBytes(i.counts.messages * AVG_MSG_BYTES)} on disk
-                          </span>
-                        </>
-                      ) : (
-                        '—'
-                      )}
-                    </span>
-                    {isAdmin && (
-                      <button
-                        title={isDefault ? 'Change the default channel before deleting it' : `Delete “${i.name}”`}
-                        onClick={() => deleteChannel(i.name, isDefault)}
-                        disabled={del.isPending && del.variables === i.name}
-                        className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-50 disabled:opacity-40"
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {!d.evolutionError && (d.evolution ?? []).some((i) => i.counts) && (
-          <p className="mt-1 text-[10px] text-gray-400">
-            Chat-message sizes are estimated (~{(AVG_MSG_BYTES / 1024).toFixed(1)} KB each) — the
-            stored messages live on the Evolution server, separate from this app's job history.
-          </p>
-        )}
-        {deadInstances.length > 0 && (
-          <p className="mt-1 text-xs text-amber-600">
-            Disconnected channels keep their stored history on the server — reconnect them from the
-            Evolution manager or consider archiving.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /** The Overview tab: KPIs with trends, traffic + patterns, deliverability, jobs. */
 function Overview({ d, range }: { d: AnalyticsSummary; range: AnalyticsRange }) {
   const act = d.activity;
@@ -831,11 +648,10 @@ function Overview({ d, range }: { d: AnalyticsSummary; range: AnalyticsRange }) 
   );
 }
 
-type Tab = 'overview' | 'agents' | 'server';
+type Tab = 'overview' | 'agents';
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'agents', label: 'Agents' },
-  { id: 'server', label: 'Server' },
 ];
 
 /** Read-only aggregates over the send ledger + live traffic counters. */
@@ -878,7 +694,7 @@ export default function InsightsPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-gray-800">Insights</h2>
-            <p className="text-sm text-gray-500">Chat traffic, send activity, delivery, and server health.</p>
+            <p className="text-sm text-gray-500">Chat traffic, send activity, and delivery.</p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <a
@@ -920,7 +736,6 @@ export default function InsightsPage() {
             <AgentActivity range={range} mineOnly={false} />
           </Panel>
         )}
-        {tab === 'server' && <ServerHealth />}
       </div>
     </div>
   );
