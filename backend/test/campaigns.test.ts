@@ -560,6 +560,40 @@ describe('campaign control (batching, pause, continue)', () => {
     expect(texts.filter((x) => x === 'rewritten')).toHaveLength(3);
     expect(evo.sentTo()).toContain('972526666666');
   });
+
+  it('a failed/missed campaign with untried rows can still be edited-in-place and resumed', () => {
+    // Simulate: the campaign started, one recipient went out, then something
+    // finalized it 'failed' (e.g. a dead session) — three recipients were
+    // never even attempted.
+    const job = jobs.upsert({ id: 'j1', scheduledAt: PAST, recipients: five, items: [textItem] });
+    jobs.ensureLedger(job);
+    jobs.claim('j1');
+    jobs.markSendDone(jobs.pendingSends('j1')[0]!, 'sent');
+    jobs.setStatus('j1', 'failed');
+    expect(jobs.byId('j1')!.startedAt).not.toBeNull();
+
+    // resume() must accept a 'failed' job with untried ledger rows, same as a
+    // paused or stopped one
+    expect(jobs.resume('j1')).toBe(true);
+    expect(jobs.byId('j1')!.status).toBe('pending');
+
+    // and the same rewrite it did for a paused campaign — a 'missed' job gets
+    // it too, keeping what already sent and dropping the un-sent recipient
+    jobs.setStatus('j1', 'missed');
+    const kept = five.filter((x) => x.id !== '972525555555');
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: kept,
+      items: [{ type: 'text', data: { text: 'rewritten' } }],
+    });
+    const after = jobs.allSends('j1');
+    expect(after.find((s) => s.recipient === five[0]!.id)!.status).toBe('sent');
+    expect(after.some((s) => s.recipient === '972525555555')).toBe(false);
+    expect(jobs.byId('j1')!.status).toBe('missed'); // the edit alone doesn't requeue it
+
+    expect(jobs.resume('j1')).toBe(true);
+  });
 });
 
 describe('campaign control API', () => {

@@ -419,7 +419,7 @@ export function registerJobs(
     if (!jobs.resume(id))
       return reply
         .code(409)
-        .send({ error: `job is ${j.status} — only a paused (or stopped, part-sent) campaign continues` });
+        .send({ error: `job is ${j.status} — only a paused (or stopped/failed/missed, part-sent) campaign continues` });
     // read the job back BEFORE waking the scheduler: the poke fires the tick
     // that claims it, and the caller asked what resuming did, not who won that
     // race (the SSE progress events report the run itself)

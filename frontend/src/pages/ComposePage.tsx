@@ -254,7 +254,7 @@ export default function ComposePage() {
       )}
       {partlySent && (
         <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
-          Editing a <b>paused campaign</b>. Everyone it already sent to keeps what they got — your
+          Editing an <b>in-progress campaign</b>. Everyone it already sent to keeps what they got — your
           changes only reach the recipients still to go. You can reword the messages and change the
           recipient list, but <b>not add or remove a message</b> in the sequence.
         </div>

@@ -615,22 +615,46 @@ function JobRow({
     ledger.data?.failed ??
     progress?.failed ??
     Number(/(\d+) failed/.exec(job.result ?? '')?.[1] ?? 0);
+  const pendingCount = ledger.data?.pending ?? progress?.pending ?? 0;
+  // A 'failed'/'missed' job that stopped with untried ledger rows is, in every
+  // way that matters, the same situation as a paused campaign — it just ended
+  // up in History instead of Scheduled. Offer it the same in-place "Edit
+  // remaining" (on top of, not instead of, the ordinary "Edit & resend" clone)
+  // rather than forcing a full duplicate resend to reach the untried rest.
+  const editInPlaceEligible =
+    EDIT_IN_PLACE.includes(job.status) ||
+    (['failed', 'missed'].includes(job.status) && !!job.startedAt && pendingCount > 0);
 
-  // Prefill the Compose tab with this job's content. A still-pending job is
-  // edited in place (id + time travel along); anything finished is a template
-  // for a brand-new send.
-  function editInCompose() {
+  // Prefill the Compose tab with this job's content, in place — the chips, the
+  // pacing math and the message count all need to reflect who's actually still
+  // pending, so a partly-sent job fetches just that from the ledger instead of
+  // job.recipients (the ORIGINAL full audience, sent and unsent alike).
+  async function editInCompose() {
+    let recipients = job.recipients;
+    if (job.startedAt && editInPlaceEligible) {
+      try {
+        recipients = (await api.jobs.recipientsByStatus(job.id, 'pending')).recipients;
+      } catch (e) {
+        toast(String((e as Error).message), 'err');
+        return;
+      }
+    }
     setComposeDraft({
-      recipients: job.recipients,
+      recipients,
       items: job.items,
       repeat: job.repeat,
       batch: job.batch,
-      // pending and paused jobs are edited in place — a paused campaign keeps
-      // its ledger, so the change lands on whoever hasn't been sent to yet
-      ...(EDIT_IN_PLACE.includes(job.status)
+      // edited in place: the change lands on whoever hasn't been sent to yet
+      ...(editInPlaceEligible
         ? { jobId: job.id, scheduledAt: job.scheduledAt, partlySent: !!job.startedAt }
         : {}),
     });
+    onCompose();
+  }
+
+  /** Always a fresh job, never edited in place — the deliberate full resend. */
+  function editAndResendInCompose() {
+    setComposeDraft({ recipients: job.recipients, items: job.items, repeat: job.repeat, batch: job.batch });
     onCompose();
   }
 
@@ -664,6 +688,7 @@ function JobRow({
   if (
     job.status === 'paused' ||
     (job.status === 'cancelled' && !!job.startedAt) ||
+    (['failed', 'missed'].includes(job.status) && !!job.startedAt && pendingCount > 0) ||
     (job.status === 'pending' && !!job.startedAt && new Date(job.scheduledAt).getTime() > Date.now())
   ) {
     actions.push({
@@ -689,17 +714,26 @@ function JobRow({
       title: 'Send only to the recipients whose message failed — the rest are untouched',
     });
   }
-  if (RESENDABLE.includes(job.status) || EDIT_IN_PLACE.includes(job.status)) {
+  if (editInPlaceEligible) {
     actions.push({
       key: 'edit',
       // a job that has already sent is always edited "for the rest"
-      label: EDIT_IN_PLACE.includes(job.status) ? (job.startedAt ? 'Edit remaining' : 'Edit') : 'Edit & resend',
+      label: job.startedAt ? 'Edit remaining' : 'Edit',
       onClick: editInCompose,
       color: 'blue',
-      title:
-        job.startedAt && EDIT_IN_PLACE.includes(job.status)
-          ? 'Edit the message — it applies to everyone still to be sent to'
-          : undefined,
+      title: job.startedAt ? 'Edit the message — it applies to everyone still to be sent to' : undefined,
+    });
+  }
+  // "Edit & resend" always clones into a brand-new job/ledger for the WHOLE
+  // original audience — offered alongside "Edit remaining" on a failed/missed
+  // job with untried rows, so the operator picks: continue this one, or start
+  // fresh and re-message everyone.
+  if (RESENDABLE.includes(job.status)) {
+    actions.push({
+      key: 'edit-resend',
+      label: 'Edit & resend',
+      onClick: editAndResendInCompose,
+      color: 'blue',
     });
   }
   if (RESENDABLE.includes(job.status)) {

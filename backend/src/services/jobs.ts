@@ -329,12 +329,14 @@ export class JobStore {
       pause: db.prepare(`UPDATE jobs SET status='paused' WHERE id=? AND status IN ('pending','running')`),
       // Continue: back in the queue, due now. Resuming is NOT re-approved —
       // the job was already released once and is half-sent. It covers all
-      // three ways a campaign can be sitting still: paused for a human, waiting
-      // out an unattended batch pause ('pending' + a fire time in the future),
-      // and stopped after it had already sent something.
+      // ways a campaign can be sitting still: paused for a human, waiting out
+      // an unattended batch pause ('pending' + a fire time in the future),
+      // stopped after it had already sent something, and a 'failed'/'missed'
+      // campaign that still has ledger rows nobody ever attempted — Compose's
+      // "Edit remaining" on a History job resumes it the same way.
       resume: db.prepare(`UPDATE jobs SET status='pending', scheduled_at=@now
         WHERE id=@id AND (status='paused'
-          OR (status IN ('pending','cancelled') AND started_at IS NOT NULL))`),
+          OR (status IN ('pending','cancelled','failed','missed') AND started_at IS NOT NULL))`),
       // A batch boundary or clock cutoff with an auto-continue: out of
       // 'running' without finalizing, due again at @at.
       requeueAt: db.prepare(`UPDATE jobs SET status='pending', scheduled_at=@at
@@ -594,9 +596,9 @@ export class JobStore {
   }
 
   /**
-   * Continue a paused campaign (or one cancelled after it had started) from
-   * exactly where the ledger left off — due now. Returns false when there was
-   * nothing to continue.
+   * Continue a paused campaign — or one cancelled, failed, or missed after it
+   * had already started — from exactly where the ledger left off, due now.
+   * Returns false when there was nothing to continue.
    */
   resume(id: string, now: Date = new Date()): boolean {
     return this.q.resume.run({ id, now: now.toISOString() }).changes > 0;
