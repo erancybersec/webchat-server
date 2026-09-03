@@ -104,6 +104,12 @@ export interface Agent {
   effectivePerms: Perms;
   /** Evolution instance grants; null/empty = the Settings default only. */
   instances: string[] | null;
+  /**
+   * The synthetic AI sender rather than a person. The server already keeps it
+   * out of GET /api/agents, so this is only ever false here — it exists so any
+   * roster/picker code that grows a new source stays explicit about it.
+   */
+  isBot?: boolean;
   createdAt: string;
   lastSeenAt: string;
 }
@@ -377,6 +383,109 @@ export interface ChatMeta {
   allTags: string[];
   /** alt jid → canonical jid (the key chat meta rows are stored under). */
   aliases: Record<string, string>;
+  /**
+   * Per-chat AI control state. Deliberately separate from `assignments`: human
+   * ownership lives there and only there, and 'PAUSED' here is a resume latch
+   * ("may the AI start answering again by itself"), not a mirror of it.
+   */
+  aiStates: Record<string, AiChatStateSummary>;
+}
+
+// ---- AI agent ------------------------------------------------------------
+
+export type AiState = 'ACTIVE' | 'HANDOFF_REQUESTED' | 'PAUSED' | 'LIMIT_REACHED';
+
+export interface AiChatStateSummary {
+  state: AiState;
+  reason: string;
+  changedBy: string;
+  replyCount: number;
+  updatedAt: string;
+}
+
+export type AiProviderName = 'anthropic' | 'openai';
+export type AiModelTier = 'fast' | 'balanced' | 'best' | 'custom';
+
+export interface KnowledgeArticle {
+  id: number;
+  title: string;
+  category: string;
+  content: string;
+  keywords: string;
+  active: boolean;
+  updatedAt: string;
+}
+
+export interface StudioOffering {
+  id: number;
+  branch: string;
+  title: string;
+  /** '' = unspecified / all ages. */
+  ageGroup: string;
+  level: string;
+  /** 'sun'..'sat', or '' when the row isn't schedule-shaped. */
+  dayOfWeek: string;
+  time: string;
+  price: string;
+  spotsLeft: number | null;
+  /** Stamped ONLY by a recheck — a general edit never touches it. */
+  availabilityUpdatedAt: string | null;
+  isOffer: boolean;
+  notes: string;
+  active: boolean;
+  validUntil: string | null;
+  updatedAt: string;
+}
+
+/** One AI turn's diagnostics, from the Test sandbox. */
+export interface AiTestResult {
+  reply: string;
+  handoff: boolean;
+  handoffReason: string;
+  /** True when no valid respond_to_lead ever arrived — a safe handoff, not an answer. */
+  invalidFinal: boolean;
+  memoryUpdates: Record<string, unknown>;
+  toolsCalled: Array<{ id: string; name: string; args: unknown; result: unknown }>;
+  knowledgeUsed: number[];
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  rounds: number;
+  latencyMs: number;
+  provider: string;
+  model: string;
+  promptHash: string;
+  error?: string;
+}
+
+export interface AiAuditRow {
+  id: number;
+  createdAt: string;
+  chatJid: string;
+  instance: string;
+  contactType: string;
+  aiStateBefore: string;
+  provider: string;
+  model: string;
+  promptHash: string;
+  historyThroughMessageId: string | null;
+  knowledgeUsed: number[];
+  toolsCalled: unknown;
+  memoryUpdates: unknown;
+  responseText: string;
+  handoff: boolean;
+  handoffReason: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  latencyMs: number | null;
+  deliveryOutcome: string | null;
+  outgoingMessageId: string | null;
+  error: string | null;
 }
 
 export interface ChatNote {

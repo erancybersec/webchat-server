@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Config } from './config.js';
 import type { Db } from './db/index.js';
 import { registerAgents } from './routes/agents.js';
+import { registerAiAgent } from './routes/aiagent.js';
 import { registerAnalytics } from './routes/analytics.js';
 import { registerBlacklist } from './routes/blacklist.js';
 import { registerChats } from './routes/chats.js';
@@ -25,6 +26,19 @@ import { registerSettings } from './routes/settings.js';
 import { registerStatic } from './routes/static.js';
 import { attachAckTracker } from './services/acks.js';
 import { AgentsStore, emailFromRequest } from './services/agents.js';
+import {
+  AI_AGENT_COLOR,
+  AI_AGENT_EMAIL,
+  AI_AGENT_NAME,
+  AiAgentListener,
+  AiAgentRunner,
+  AiAgentStore,
+  AiAuditLog,
+  AiPendingSendStore,
+  evolutionThreadReader,
+} from './services/aiagent.js';
+import { KnowledgeStore } from './services/knowledge.js';
+import { StudioDataStore } from './services/studioData.js';
 import { requirePerm, type PermissionKey } from './services/authz.js';
 import { BlacklistStore } from './services/blacklist.js';
 import { VerificationService, VerificationStore } from './services/verification.js';
@@ -37,7 +51,7 @@ import {
   ContactFamiliarityStore,
   seedFamiliarityFromChats,
 } from './services/familiarity.js';
-import { ColdSendQuota } from './services/quota.js';
+import { AiReplyQuota, ColdSendQuota } from './services/quota.js';
 import { InstanceAccess, InstancesService } from './services/instances.js';
 import { JobStore } from './services/jobs.js';
 import { ListsStore } from './services/lists.js';
@@ -73,6 +87,9 @@ export interface App {
   blacklist: BlacklistStore;
   /** One-time cold-contact-cap bootstrap; safe to call again (it no-ops). */
   seedFamiliarity: () => Promise<void>;
+  /** The AI agent's poller — started in index.ts, driven manually by tests. */
+  aiAgent: AiAgentRunner;
+  aiAgentStore: AiAgentStore;
 }
 
 export async function buildApp(opts: BuildOptions): Promise<App> {
@@ -171,6 +188,44 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   // activity counters (Insights), and the chat watcher (jid aliases +
   // auto-reopen of resolved chats on inbound)
   new OptOutListener(cfg, blacklist, sender, (m) => app.log.info(m)).attach(relay);
+  // AI agent for inbound leads (migration 024). Read-only: it retrieves
+  // knowledge/studio data and can request a human handoff, and has no tool that
+  // writes to any business system. The master switch defaults OFF and the line
+  // allow-list defaults EMPTY — attaching the listener costs nothing until both
+  // are set deliberately in Settings.
+  const knowledge = new KnowledgeStore(db);
+  const studioData = new StudioDataStore(db);
+  const aiQuota = new AiReplyQuota(db, cfg);
+  const aiAgentStore = new AiAgentStore(db, (jid) => chatMeta.canon(jid));
+  const aiPending = new AiPendingSendStore(db);
+  const aiAudit = new AiAuditLog(db);
+  // The AI's own sender row, so its messages badge like any other sender's.
+  // is_bot keeps it out of the human roster and the assignment picker.
+  agents.ensureBot(AI_AGENT_EMAIL, AI_AGENT_NAME, AI_AGENT_COLOR);
+  const aiAgent = new AiAgentRunner({
+    cfg,
+    store: aiAgentStore,
+    pending: aiPending,
+    audit: aiAudit,
+    chatMeta,
+    agents,
+    sender,
+    quota: aiQuota,
+    knowledge,
+    studio: studioData,
+    thread: evolutionThreadReader(evo),
+    emit,
+    log: (m) => app.log.info(m),
+  });
+  new AiAgentListener({
+    cfg,
+    store: aiAgentStore,
+    chatMeta,
+    pending: aiPending,
+    onImmediateHandoff: (jid, inst, reason) => aiAgent.handoffNow(jid, inst, reason),
+    emit,
+    log: (m) => app.log.info(m),
+  }).attach(relay);
   // capture WHEN the recipient reads a sent message (the live ack is the only
   // carrier of the read time — see ReadReceiptStore) and track delivery/read
   // against the job ledger in the same pass.
@@ -281,7 +336,15 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   registerVerification(app, verification);
   registerSending(app, sender, cfg, agents, chatMeta, instanceAccess);
   registerAgents(app, agents, cfg, guard('agents.manage'), { meta: chatMeta, emit, access: instanceAccess });
-  registerChats(app, { cfg, meta: chatMeta, agents, presence, emit });
+  registerChats(app, { cfg, meta: chatMeta, agents, presence, emit, ai: aiAgentStore, db });
+  registerAiAgent(app, {
+    cfg,
+    knowledge,
+    studio: studioData,
+    runner: aiAgent,
+    audit: aiAudit,
+    requireAdmin: guard('settings.manage'),
+  });
   registerReminders(app, { cfg, agents, reminders });
   registerPush(app, { cfg, push, prefs: notifyPrefs });
   registerToolbarPrefs(app, { cfg, prefs: toolbarPrefs });
@@ -336,6 +399,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
 
   app.addHook('onClose', async () => {
     await scheduler.stop();
+    aiAgent.stopPolling();
     relay.stop();
   });
 
@@ -357,5 +421,5 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
     }
   };
 
-  return { app, scheduler, relay, jobs, blacklist, seedFamiliarity };
+  return { app, scheduler, relay, jobs, blacklist, seedFamiliarity, aiAgent, aiAgentStore };
 }

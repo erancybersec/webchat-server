@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { agentBadgeClass, agentLabel, useAgents, useMe } from '../../lib/agents';
 import { api } from '../../lib/api';
 import { useReminders } from '../../lib/workbench';
-import type { AgentPresenceEntry, ChatMeta, ChatWorkStatus, Reminder } from '../../types';
+import type { AgentPresenceEntry, AiState, ChatMeta, ChatWorkStatus, Reminder } from '../../types';
 
 const STATUS_OPTIONS: Array<{ id: ChatWorkStatus; label: string; cls: string }> = [
   { id: 'open', label: 'Open', cls: 'bg-blue-100 text-blue-700' },
@@ -34,6 +34,30 @@ function remindPresets(): Array<{ label: string; at: () => Date }> {
   ];
 }
 
+/** How each AI state reads in the bar, and what it means for the operator. */
+const AI_PILL: Record<AiState, { label: string; cls: string; title: string }> = {
+  ACTIVE: {
+    label: 'AI answering',
+    cls: 'bg-violet-100 text-violet-700',
+    title: 'The AI is answering this conversation automatically',
+  },
+  PAUSED: {
+    label: 'AI paused',
+    cls: 'bg-gray-100 text-gray-600',
+    title: 'Someone took this chat over — the AI stays paused until it is explicitly resumed',
+  },
+  HANDOFF_REQUESTED: {
+    label: 'handed off',
+    cls: 'bg-amber-100 text-amber-700',
+    title: 'The AI asked for a person',
+  },
+  LIMIT_REACHED: {
+    label: 'AI limit reached',
+    cls: 'bg-gray-100 text-gray-600',
+    title: 'This conversation used its reply allowance; it resets when the lead comes back after the session gap',
+  },
+};
+
 export interface WorkbenchBarProps {
   /** Canonical jid (server chat-meta key) for this conversation. */
   jid: string;
@@ -57,12 +81,16 @@ export default function WorkbenchBar({ jid, meta, others }: WorkbenchBarProps) {
   const status = meta?.statuses[jid]?.status ?? 'open';
   const assignment = meta?.assignments[jid];
   const tags = meta?.tags[jid] ?? [];
+  // Only present once the AI has actually engaged with this chat (or someone
+  // took it over) — so the bar stays clean everywhere the feature is unused.
+  const aiState = meta?.aiStates?.[jid];
 
   const [assignOpen, setAssignOpen] = useState(false);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState('');
   const [notesOpen, setNotesOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState('');
+  const [aiOpen, setAiOpen] = useState(false);
   const [remindOpen, setRemindOpen] = useState(false);
   const [remindNote, setRemindNote] = useState('');
   const [remindAt, setRemindAt] = useState('');
@@ -95,6 +123,24 @@ export default function WorkbenchBar({ jid, meta, others }: WorkbenchBarProps) {
   const saveTags = useMutation({
     mutationFn: (next: string[]) => api.chatMeta.setTags(jid, next),
     onSuccess: invalidateMeta,
+  });
+
+  // Take Over is ONE request: it claims the chat and pauses the AI together, so
+  // there is no window where the assignment landed and the pause didn't.
+  const takeOver = useMutation({
+    mutationFn: () => api.chatMeta.takeOver(jid),
+    onSuccess: invalidateMeta,
+  });
+  // Resume is refused server-side while a human still owns the chat; being
+  // unassigned again is necessary but not sufficient — someone has to say so.
+  const resumeAi = useMutation({
+    mutationFn: () => api.chatMeta.resumeAi(jid),
+    onSuccess: invalidateMeta,
+  });
+  const aiActivity = useQuery({
+    queryKey: ['ai-audit', jid],
+    queryFn: () => api.aiAgent.audit(jid, 10),
+    enabled: aiOpen,
   });
 
   const notes = useQuery({
@@ -213,6 +259,50 @@ export default function WorkbenchBar({ jid, meta, others }: WorkbenchBarProps) {
             </div>
           )}
         </div>
+
+        {/* AI agent: what it is doing here, and the two ways to change that.
+            Note the pill is NOT derived from `assignment` — human ownership and
+            the AI's resume latch are separate facts on purpose. */}
+        {aiState && (
+          <>
+            <button
+              onClick={() => setAiOpen(!aiOpen)}
+              title={
+                AI_PILL[aiState.state].title +
+                (aiState.reason ? ` — ${aiState.reason}` : '') +
+                '. Click for the AI activity log.'
+              }
+              className={`flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ${AI_PILL[aiState.state].cls}`}
+            >
+              🤖 {AI_PILL[aiState.state].label}
+              {aiState.state === 'HANDOFF_REQUESTED' && aiState.reason && (
+                <span className="max-w-[14rem] truncate font-normal opacity-80" dir="auto">
+                  — {aiState.reason}
+                </span>
+              )}
+            </button>
+            {aiState.state === 'ACTIVE' && (
+              <button
+                onClick={() => takeOver.mutate()}
+                disabled={takeOver.isPending}
+                title="Claim this chat and stop the AI answering it"
+                className="rounded-full border border-violet-300 px-2 py-0.5 font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-50"
+              >
+                Take over
+              </button>
+            )}
+            {aiState.state !== 'ACTIVE' && !assignment && (
+              <button
+                onClick={() => resumeAi.mutate()}
+                disabled={resumeAi.isPending}
+                title="Let the AI answer this conversation again"
+                className="rounded-full border border-violet-300 px-2 py-0.5 font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-50"
+              >
+                Resume AI
+              </button>
+            )}
+          </>
+        )}
 
         {/* tags */}
         {tags.map((t) => (
@@ -369,6 +459,66 @@ export default function WorkbenchBar({ jid, meta, others }: WorkbenchBarProps) {
           >
             Mark resolved
           </button>
+        </div>
+      )}
+
+      {/* AI activity — what the AI actually did here, per turn. The delivery
+          outcome is the interesting column: a generated turn that was canceled
+          by a take-over or a newer message still has a row. */}
+      {aiOpen && aiState && (
+        <div className="mt-1.5 rounded-lg border border-violet-200 bg-violet-50/60 p-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-medium text-violet-800">AI activity</p>
+            <span className="text-[10px] text-violet-600">
+              {aiState.replyCount} repl{aiState.replyCount === 1 ? 'y' : 'ies'} this session
+              {aiState.changedBy && ` · last changed by ${aiState.changedBy}`}
+            </span>
+          </div>
+          {aiActivity.isLoading && <p className="py-1 text-gray-400">Loading…</p>}
+          {aiActivity.isError && (
+            <p className="py-1 text-gray-400">Only admins can read the AI activity log.</p>
+          )}
+          {aiActivity.data?.rows.length === 0 && (
+            <p className="py-1 text-gray-400">No AI turns recorded for this chat yet.</p>
+          )}
+          <div className="mt-1 max-h-48 space-y-1 overflow-y-auto">
+            {(aiActivity.data?.rows ?? []).map((r) => (
+              <div key={r.id} className="rounded bg-white/80 px-2 py-1">
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
+                  <span>{new Date(r.createdAt).toLocaleString()}</span>
+                  <span
+                    className={`rounded px-1 ${
+                      r.deliveryOutcome === 'sent'
+                        ? 'bg-green-100 text-green-700'
+                        : r.deliveryOutcome === 'failed'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {r.deliveryOutcome ?? 'pending'}
+                  </span>
+                  {r.handoff && (
+                    <span className="rounded bg-amber-100 px-1 text-amber-700">
+                      handoff{r.handoffReason ? `: ${r.handoffReason}` : ''}
+                    </span>
+                  )}
+                  <span>{r.model}</span>
+                  {r.latencyMs != null && <span>{r.latencyMs} ms</span>}
+                  {r.inputTokens != null && (
+                    <span>
+                      {r.inputTokens} in / {r.outputTokens ?? 0} out
+                    </span>
+                  )}
+                </div>
+                {r.responseText && (
+                  <p className="whitespace-pre-wrap break-words text-gray-700" dir="auto">
+                    {r.responseText}
+                  </p>
+                )}
+                {r.error && <p className="text-red-600">{r.error}</p>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

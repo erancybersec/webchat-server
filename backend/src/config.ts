@@ -85,8 +85,46 @@ export interface Config {
    * (Settings → Notifications controls this; nothing is implicit).
    */
   notifyInstances: string[];
+  /**
+   * AI agent for inbound leads. Read-only: it can retrieve knowledge/structured
+   * studio data and request a human handoff, and has no tool that writes to any
+   * business system. Master switch defaults OFF and the instance allow-list
+   * defaults EMPTY — both must be set deliberately before a word is ever sent.
+   */
+  aiAgentEnabled: boolean;
+  /** Explicit allow-list of Evolution lines the AI may answer on, like notifyInstances. */
+  aiAgentInstances: string[];
+  aiAgentProvider: AiProviderName;
+  aiAgentModelTier: AiModelTier;
+  /** Only consulted when aiAgentModelTier === 'custom'. */
+  aiAgentModel: string;
+  /** Never sent to the browser, never in prompts/tool results/the audit log. */
+  aiAgentApiKey: string;
+  /** Identity, tone, language, example replies. */
+  aiAgentPersona: string;
+  /** Studio-specific boundaries, on top of the fixed (code-level) safety rules. */
+  aiAgentRules: string;
+  /** Studio-specific handoff guidance, on top of the fixed safety rules. */
+  aiAgentEscalation: string;
+  /** Replies per AI SESSION, not lifetime — see the session-gap rollover. */
+  aiAgentMaxRepliesPerSession: number;
+  /** Idle gap that starts a fresh AI session for a returning lead. */
+  aiAgentSessionGapHours: number;
+  /** Global replies/day across every chat — a cost ceiling, not per-chat state. */
+  aiAgentDailyCap: number;
+  aiAgentHandoffMessage: string;
+  /** Debounce before answering, so a lead typing three lines gets one reply. */
+  aiAgentReplyDelaySec: number;
   evo: EvolutionConfig;
 }
+
+export type AiProviderName = 'anthropic' | 'openai';
+export type AiModelTier = 'fast' | 'balanced' | 'best' | 'custom';
+
+export const AI_PROVIDERS: readonly AiProviderName[] = ['anthropic', 'openai'];
+export const AI_MODEL_TIERS: readonly AiModelTier[] = ['fast', 'balanced', 'best', 'custom'];
+
+const DEFAULT_HANDOFF_MESSAGE = 'Let me get a team member to help with that.';
 
 type Env = Record<string, string | undefined>;
 
@@ -140,6 +178,27 @@ export function loadConfig(env: Env = process.env): Config {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    aiAgentEnabled: env.AI_AGENT_ENABLED === 'true',
+    aiAgentInstances: (env.AI_AGENT_INSTANCES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    aiAgentProvider: AI_PROVIDERS.includes(env.AI_AGENT_PROVIDER as AiProviderName)
+      ? (env.AI_AGENT_PROVIDER as AiProviderName)
+      : 'anthropic',
+    aiAgentModelTier: AI_MODEL_TIERS.includes(env.AI_AGENT_MODEL_TIER as AiModelTier)
+      ? (env.AI_AGENT_MODEL_TIER as AiModelTier)
+      : 'fast',
+    aiAgentModel: env.AI_AGENT_MODEL ?? '',
+    aiAgentApiKey: env.AI_AGENT_API_KEY ?? '',
+    aiAgentPersona: env.AI_AGENT_PERSONA ?? '',
+    aiAgentRules: env.AI_AGENT_RULES ?? '',
+    aiAgentEscalation: env.AI_AGENT_ESCALATION ?? '',
+    aiAgentMaxRepliesPerSession: Math.max(1, num(env, 'AI_AGENT_MAX_REPLIES', 20)),
+    aiAgentSessionGapHours: Math.max(1, num(env, 'AI_AGENT_SESSION_GAP_HOURS', 48)),
+    aiAgentDailyCap: Math.max(0, num(env, 'AI_AGENT_DAILY_CAP', 200)),
+    aiAgentHandoffMessage: env.AI_AGENT_HANDOFF_MESSAGE ?? DEFAULT_HANDOFF_MESSAGE,
+    aiAgentReplyDelaySec: Math.max(0, num(env, 'AI_AGENT_REPLY_DELAY_SEC', 10)),
     evo: {
       base: (env.EVOLUTION_BASE || '').replace(/\/+$/, ''),
       instance: env.EVOLUTION_INSTANCE || '',

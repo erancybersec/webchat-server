@@ -2,6 +2,10 @@ import type {
   Agent,
   AgentInsightsRow,
   AgentRole,
+  AiAuditRow,
+  AiModelTier,
+  AiProviderName,
+  AiTestResult,
   AnalyticsSummary,
   BlacklistEntry,
   CampaignProgress,
@@ -18,6 +22,7 @@ import type {
   JobSend,
   JobStatus,
   JobVolumeDay,
+  KnowledgeArticle,
   ListMember,
   ListRecipe,
   MaintenanceReport,
@@ -32,6 +37,7 @@ import type {
   SendResult,
   SendStatus,
   ServerQuickReply,
+  StudioOffering,
   VerificationPage,
   VerificationSweep,
   VerifyStatus,
@@ -100,8 +106,8 @@ async function http<T>(path: string, init?: HttpInit): Promise<T> {
 }
 
 const get = <T,>(path: string) => http<T>(path);
-const post = <T,>(path: string, body?: unknown) =>
-  http<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
+const post = <T,>(path: string, body?: unknown, opts?: { timeoutMs?: number }) =>
+  http<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}), ...opts });
 const put = <T,>(path: string, body: unknown) =>
   http<T>(path, { method: 'PUT', body: JSON.stringify(body) });
 const del = <T,>(path: string) => http<T>(path, { method: 'DELETE' });
@@ -153,6 +159,54 @@ export interface ServerSettings {
   coldRampWindowDays: number;
   /** Evolution lines that fire push notifications; [] = default line only. */
   notifyInstances: string[];
+  /**
+   * AI agent for inbound leads. `aiAgentEnabled` plus a non-empty
+   * `aiAgentInstances` are the two things that let it answer anyone at all —
+   * both default off/empty and nothing is implicit.
+   */
+  aiAgentEnabled: boolean;
+  aiAgentInstances: string[];
+  aiAgentProvider: AiProviderName;
+  aiAgentModelTier: AiModelTier;
+  aiAgentModel: string;
+  /** The key itself never leaves the server — only these two. */
+  aiAgentApiKeySet: boolean;
+  aiAgentApiKeyHint: string;
+  aiAgentPersona: string;
+  aiAgentRules: string;
+  aiAgentEscalation: string;
+  aiAgentMaxRepliesPerSession: number;
+  aiAgentSessionGapHours: number;
+  aiAgentDailyCap: number;
+  aiAgentHandoffMessage: string;
+  aiAgentReplyDelaySec: number;
+  /** Read-only: the fixed rules the operator's own instructions sit on top of. */
+  aiAgentSafetyRules: string;
+  /** The model the current provider/tier resolves to. */
+  aiAgentResolvedModel: string;
+}
+
+export interface KnowledgeInput {
+  title: string;
+  content: string;
+  category?: string;
+  keywords?: string;
+  active?: boolean;
+}
+
+export interface OfferingInput {
+  title?: string;
+  branch?: string;
+  ageGroup?: string;
+  level?: string;
+  dayOfWeek?: string;
+  time?: string;
+  price?: string;
+  spotsLeft?: number | null;
+  isOffer?: boolean;
+  notes?: string;
+  active?: boolean;
+  validUntil?: string | null;
 }
 
 /** Today's first-contact ration for one line, and how much of it is left. */
@@ -186,7 +240,17 @@ export interface RecipientClassification {
 }
 
 export type SettingsPatch = Partial<
-  Omit<ServerSettings, 'apikeySet' | 'apikeyHint' | 'timezone' | 'serverTime'> & { apikey: string }
+  Omit<
+    ServerSettings,
+    | 'apikeySet'
+    | 'apikeyHint'
+    | 'timezone'
+    | 'serverTime'
+    | 'aiAgentApiKeySet'
+    | 'aiAgentApiKeyHint'
+    | 'aiAgentSafetyRules'
+    | 'aiAgentResolvedModel'
+  > & { apikey: string; aiAgentApiKey: string }
 >;
 
 /** Per-person notification preferences (each agent sets their own). */
@@ -445,6 +509,47 @@ export const api = {
     notes: (jid: string) => get<ChatNote[]>(`/api/chats/notes?jid=${encodeURIComponent(jid)}`),
     addNote: (jid: string, body: string) => post<ChatNote>('/api/chats/notes', { jid, body }),
     removeNote: (id: number) => del<{ ok: boolean }>(`/api/chats/notes/${id}`),
+    /**
+     * Claim the chat AND pause the AI in one request — never two, or a partial
+     * failure leaves the AI free to answer over the human who just stepped in.
+     */
+    takeOver: (jid: string) =>
+      post<{ ok: boolean; jid: string; agentEmail: string; aiState: string }>(
+        '/api/chats/take-over',
+        { jid },
+      ),
+    /** 409s while a human still owns the chat. */
+    resumeAi: (jid: string) =>
+      post<{ ok: boolean; jid: string; aiState: string }>('/api/chats/resume-ai', { jid }),
+  },
+
+  aiAgent: {
+    knowledge: {
+      list: () => get<KnowledgeArticle[]>('/api/ai-agent/knowledge'),
+      create: (input: KnowledgeInput) => post<KnowledgeArticle>('/api/ai-agent/knowledge', input),
+      update: (id: number, patch: Partial<KnowledgeInput>) =>
+        put<KnowledgeArticle>(`/api/ai-agent/knowledge/${id}`, patch),
+      remove: (id: number) => del<{ ok: boolean }>(`/api/ai-agent/knowledge/${id}`),
+    },
+    offerings: {
+      list: () => get<StudioOffering[]>('/api/ai-agent/offerings'),
+      create: (input: OfferingInput) => post<StudioOffering>('/api/ai-agent/offerings', input),
+      update: (id: number, patch: OfferingInput) =>
+        put<StudioOffering>(`/api/ai-agent/offerings/${id}`, patch),
+      /** The ONE action that stamps availability freshness. */
+      recheck: (id: number, spotsLeft: number | null) =>
+        post<StudioOffering>(`/api/ai-agent/offerings/${id}/recheck`, { spotsLeft }),
+      remove: (id: number) => del<{ ok: boolean }>(`/api/ai-agent/offerings/${id}`),
+    },
+    // Stateless: `history` carries the whole sandbox conversation, and nothing
+    // is ever sent to a real number.
+    test: (message: string, history: Array<{ role: 'customer' | 'agent'; text: string }> = []) =>
+      post<AiTestResult>('/api/ai-agent/test', { message, history }, { timeoutMs: 60_000 }),
+    audit: (chatJid?: string, limit = 20) => {
+      const q = new URLSearchParams({ limit: String(limit) });
+      if (chatJid) q.set('chatJid', chatJid);
+      return get<{ rows: AiAuditRow[] }>(`/api/ai-agent/audit?${q}`);
+    },
   },
 
   agentPresence: (tabId: string, chatJid: string, typing: boolean) =>

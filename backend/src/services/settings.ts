@@ -1,4 +1,10 @@
-import type { Config } from '../config.js';
+import {
+  AI_MODEL_TIERS,
+  AI_PROVIDERS,
+  type AiModelTier,
+  type AiProviderName,
+  type Config,
+} from '../config.js';
 import type { Db } from '../db/index.js';
 
 /** Keys persisted in the settings table. */
@@ -29,7 +35,21 @@ export type SettingKey =
   | 'cold_cap_enabled'
   | 'cold_daily_cap'
   | 'cold_warmup_start'
-  | 'cold_ramp_window_days';
+  | 'cold_ramp_window_days'
+  | 'ai_agent_enabled'
+  | 'ai_agent_instances'
+  | 'ai_agent_provider'
+  | 'ai_agent_model_tier'
+  | 'ai_agent_model'
+  | 'ai_agent_apikey'
+  | 'ai_agent_persona'
+  | 'ai_agent_rules'
+  | 'ai_agent_escalation'
+  | 'ai_agent_max_replies'
+  | 'ai_agent_session_gap_hours'
+  | 'ai_agent_daily_cap'
+  | 'ai_agent_handoff_message'
+  | 'ai_agent_reply_delay_sec';
 
 /**
  * Operator settings stored in SQLite. Saved values override env config —
@@ -118,5 +138,39 @@ export class SettingsStore {
         .split(',')
         .map((n) => n.trim())
         .filter(Boolean);
+    // AI agent. The master switch and the instance allow-list are the two
+    // things that let it speak at all, so both are read exactly like the
+    // toggles above — no implicit defaults, nothing derived.
+    if (s.ai_agent_enabled != null) cfg.aiAgentEnabled = s.ai_agent_enabled === '1';
+    if (s.ai_agent_instances != null)
+      cfg.aiAgentInstances = s.ai_agent_instances
+        .split(',')
+        .map((n) => n.trim())
+        .filter(Boolean);
+    if (s.ai_agent_provider != null && AI_PROVIDERS.includes(s.ai_agent_provider as AiProviderName))
+      cfg.aiAgentProvider = s.ai_agent_provider as AiProviderName;
+    if (
+      s.ai_agent_model_tier != null &&
+      AI_MODEL_TIERS.includes(s.ai_agent_model_tier as AiModelTier)
+    )
+      cfg.aiAgentModelTier = s.ai_agent_model_tier as AiModelTier;
+    if (s.ai_agent_model != null) cfg.aiAgentModel = s.ai_agent_model;
+    if (s.ai_agent_apikey != null) cfg.aiAgentApiKey = s.ai_agent_apikey;
+    if (s.ai_agent_persona != null) cfg.aiAgentPersona = s.ai_agent_persona;
+    if (s.ai_agent_rules != null) cfg.aiAgentRules = s.ai_agent_rules;
+    if (s.ai_agent_escalation != null) cfg.aiAgentEscalation = s.ai_agent_escalation;
+    const maxReplies = Number(s.ai_agent_max_replies);
+    if (s.ai_agent_max_replies != null && Number.isInteger(maxReplies) && maxReplies >= 1)
+      cfg.aiAgentMaxRepliesPerSession = maxReplies;
+    const gapHours = Number(s.ai_agent_session_gap_hours);
+    if (s.ai_agent_session_gap_hours != null && Number.isInteger(gapHours) && gapHours >= 1)
+      cfg.aiAgentSessionGapHours = gapHours;
+    const aiDailyCap = Number(s.ai_agent_daily_cap);
+    if (s.ai_agent_daily_cap != null && Number.isInteger(aiDailyCap) && aiDailyCap >= 0)
+      cfg.aiAgentDailyCap = aiDailyCap;
+    if (s.ai_agent_handoff_message != null) cfg.aiAgentHandoffMessage = s.ai_agent_handoff_message;
+    const replyDelay = Number(s.ai_agent_reply_delay_sec);
+    if (s.ai_agent_reply_delay_sec != null && Number.isInteger(replyDelay) && replyDelay >= 0)
+      cfg.aiAgentReplyDelaySec = replyDelay;
   }
 }

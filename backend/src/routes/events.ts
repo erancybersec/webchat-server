@@ -21,6 +21,7 @@ const APP_EVENTS = new Set([
   'CHAT_TAGS',
   'AGENT_PRESENCE',
   'REMINDER_DUE',
+  'AI_AGENT_STATE',
 ]);
 
 export function registerEvents(

@@ -15,6 +15,12 @@ export interface Agent {
   perms: PermOverrides;
   /** Evolution instance grants; null/empty = the Settings default only. */
   instances: string[] | null;
+  /**
+   * The synthetic AI sender, not a person. Filtered out of the human roster and
+   * the assignment picker; kept in the table so message_agents attribution can
+   * badge the AI's own sends like any other sender's.
+   */
+  isBot: boolean;
   createdAt: string;
   lastSeenAt: string;
 }
@@ -27,6 +33,7 @@ interface AgentRow {
   role: string;
   perms: string;
   instances: string | null;
+  is_bot: number;
   created_at: string;
   last_seen_at: string;
 }
@@ -63,6 +70,7 @@ const rowToAgent = (r: AgentRow): Agent => ({
   role: r.role as AgentRole,
   perms: parsePerms(r.perms),
   instances: parseInstances(r.instances),
+  isBot: !!r.is_bot,
   createdAt: r.created_at,
   lastSeenAt: r.last_seen_at,
 });
@@ -92,10 +100,18 @@ export class AgentsStore {
   constructor(db: Db) {
     this.q = {
       // Fresh-install bootstrap: the first agent ever seen becomes admin.
-      // ON CONFLICT never touches role, so revisits can't reset it.
+      // ON CONFLICT never touches role, so revisits can't reset it. The bot row
+      // is excluded from the "is this a fresh install" test — it is upserted at
+      // boot, and counting it would demote the first real human to 'agent'.
       seen: db.prepare(`INSERT INTO agents (email, role, created_at, last_seen_at)
-        VALUES (?, CASE WHEN EXISTS (SELECT 1 FROM agents) THEN 'agent' ELSE 'admin' END, ?, ?)
+        VALUES (?, CASE WHEN EXISTS (SELECT 1 FROM agents WHERE is_bot = 0) THEN 'agent' ELSE 'admin' END, ?, ?)
         ON CONFLICT(email) DO UPDATE SET last_seen_at = excluded.last_seen_at`),
+      // Idempotent boot upsert of the synthetic AI sender. Never touches role
+      // or is_bot on conflict beyond re-asserting is_bot=1, so a rename in the
+      // roster can't turn the bot row into a human one (or vice versa).
+      ensureBot: db.prepare(`INSERT INTO agents (email, name, color, role, is_bot, created_at, last_seen_at)
+        VALUES (?, ?, ?, 'agent', 1, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET is_bot = 1`),
       all: db.prepare(`SELECT * FROM agents ORDER BY created_at ASC`),
       byEmail: db.prepare(`SELECT * FROM agents WHERE email = ?`),
       update: db.prepare(`UPDATE agents SET name=@name, color=@color, active=@active, role=@role, perms=@perms, instances=@instances WHERE email=@email`),
@@ -131,6 +147,17 @@ export class AgentsStore {
 
   all(): Agent[] {
     return (this.q.all.all() as AgentRow[]).map(rowToAgent);
+  }
+
+  /**
+   * Idempotent upsert of the synthetic AI sender, called once at boot. Safe to
+   * call again: an existing row keeps its name/color (the operator may have
+   * restyled its badge) and only has is_bot re-asserted.
+   */
+  ensureBot(email: string, name: string, color: string): Agent | null {
+    const iso = new Date().toISOString();
+    this.q.ensureBot.run(email, name, color, iso, iso);
+    return this.byEmail(email);
   }
 
   byEmail(email: string): Agent | null {

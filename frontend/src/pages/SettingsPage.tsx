@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { AiAgentSettings } from '../components/AiAgentSettings';
 import { useToast } from '../components/Toast';
 import { useConfirm } from '../components/Confirm';
 import { Switch } from '../components/Switch';
@@ -216,6 +217,7 @@ const NAV_ITEMS: Array<{ id: string; label: string }> = [
   { id: 'safety', label: 'Send safety' },
   { id: 'scheduling', label: 'Scheduling' },
   { id: 'agents', label: 'Agents' },
+  { id: 'ai-agent', label: 'AI Agent' },
   { id: 'retention', label: 'Data retention' },
   { id: 'maintenance', label: 'Maintenance' },
   { id: 'notifications', label: 'Notifications' },
@@ -234,6 +236,8 @@ function NavIcon({ id }: { id: string }) {
       return <svg {...p}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>;
     case 'agents':
       return <svg {...p}><circle cx="9" cy="9" r="2.8" /><path d="M3.5 18c.6-3 2.7-4.6 5.5-4.6s4.9 1.6 5.5 4.6" /><circle cx="17" cy="8" r="2.2" /><path d="M15.3 13.6c2.2.3 3.8 1.8 4.2 4.4" /></svg>;
+    case 'ai-agent':
+      return <svg {...p}><rect x="4" y="7.5" width="16" height="12" rx="3" /><path d="M12 3.5v4M8.6 12.5h.01M15.4 12.5h.01M9.5 16h5" /></svg>;
     case 'retention':
       return <svg {...p}><ellipse cx="12" cy="6" rx="7" ry="2.6" /><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6" /><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6" /></svg>;
     case 'maintenance':
@@ -1161,6 +1165,15 @@ export default function SettingsPage() {
         {agentsOn && <AgentsTable />}
       </div>
       )}
+
+      {activeSection === 'ai-agent' &&
+        (settings.data ? (
+          <AiAgentSettings settings={settings.data} />
+        ) : (
+          <p className="rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-400 shadow-sm">
+            Loading…
+          </p>
+        ))}
 
       {activeSection === 'retention' && (
       <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">

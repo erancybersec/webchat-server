@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from '../config.js';
+import type { AiAgentStore } from '../services/aiagent.js';
 import { emailFromRequest, type AgentsStore } from '../services/agents.js';
 import { can } from '../services/authz.js';
 import { CHAT_STATUSES, type ChatMetaStore, type ChatStatus } from '../services/chatmeta.js';
+import type { Db } from '../db/index.js';
 import type { AgentPresence } from '../services/presence.js';
 
 const MAX_TAG_LEN = 40;
@@ -14,6 +16,10 @@ interface ChatsDeps {
   agents: AgentsStore;
   presence: AgentPresence;
   emit: (event: string, data: unknown) => void;
+  /** Present once the AI agent is wired; the routes below degrade without it. */
+  ai?: AiAgentStore;
+  /** Needed only to make take-over one atomic write. */
+  db?: Db;
 }
 
 /**
@@ -23,7 +29,7 @@ interface ChatsDeps {
  * no @-bearing jids in paths).
  */
 export function registerChats(app: FastifyInstance, deps: ChatsDeps): void {
-  const { cfg, meta, agents, presence, emit } = deps;
+  const { cfg, meta, agents, presence, emit, ai } = deps;
 
   const identity = (req: FastifyRequest): string =>
     cfg.agentsEnabled ? (emailFromRequest(req) ?? '') : '';
@@ -37,6 +43,10 @@ export function registerChats(app: FastifyInstance, deps: ChatsDeps): void {
       tags: tags.byChat,
       allTags: tags.all,
       aliases: meta.aliases(),
+      // AI control state, deliberately separate from `assignments`: human
+      // ownership lives there and only there, and 'PAUSED' here is a resume
+      // latch rather than a mirror of it.
+      aiStates: ai ? ai.states() : {},
     };
   });
 
@@ -65,6 +75,54 @@ export function registerChats(app: FastifyInstance, deps: ChatsDeps): void {
     const jid = meta.assign(b.jid, agentEmail, identity(req));
     emit('CHAT_ASSIGNED', { jid, agentEmail, by: identity(req) });
     return { ok: true, jid, agentEmail };
+  });
+
+  /**
+   * "Take Over": claim the chat AND stop the AI, as ONE request wrapped in one
+   * transaction. Two independent client calls would leave a window where the
+   * assignment landed and the pause didn't (or the reverse) — and that window is
+   * exactly the moment the AI would answer over a human who just stepped in.
+   */
+  app.post('/api/chats/take-over', async (req, reply) => {
+    if (!ai) return reply.code(503).send({ error: 'AI agent not available' });
+    const b = (req.body ?? {}) as { jid?: unknown; agentEmail?: unknown };
+    if (typeof b.jid !== 'string' || !b.jid) return reply.code(400).send({ error: 'jid required' });
+    // The Access identity when agent identification is on; an explicit body
+    // value is the fallback for a LAN/token deployment that has no identities.
+    const who = identity(req) || String(b.agentEmail ?? '').trim().toLowerCase();
+    if (!who) return reply.code(400).send({ error: 'agentEmail required' });
+    if (!identity(req) && !agents.byEmail(who))
+      return reply.code(400).send({ error: 'unknown agent' });
+    const jid = meta.canon(b.jid);
+    const apply = () => {
+      meta.assign(jid, who, who);
+      ai.setState(jid, 'PAUSED', 'human_takeover', who);
+    };
+    if (deps.db) deps.db.transaction(apply)();
+    else apply();
+    emit('CHAT_ASSIGNED', { jid, agentEmail: who, by: who });
+    emit('AI_AGENT_STATE', { jid, state: 'PAUSED', reason: 'human_takeover', changedBy: who });
+    return { ok: true, jid, agentEmail: who, aiState: 'PAUSED' };
+  });
+
+  /**
+   * "Resume AI". Refused while a human still owns the chat — handing it back to
+   * the AI under someone's name makes no sense, and the eligibility gate would
+   * skip it anyway. Being unassigned is necessary but not sufficient: a released
+   * chat stays PAUSED until someone explicitly resumes it here.
+   */
+  app.post('/api/chats/resume-ai', async (req, reply) => {
+    if (!ai) return reply.code(503).send({ error: 'AI agent not available' });
+    const b = (req.body ?? {}) as { jid?: unknown };
+    if (typeof b.jid !== 'string' || !b.jid) return reply.code(400).send({ error: 'jid required' });
+    const jid = meta.canon(b.jid);
+    const assignee = meta.assigneeOf(jid);
+    if (assignee)
+      return reply.code(409).send({ error: 'chat is still assigned to a human', assignee });
+    const by = identity(req);
+    ai.setState(jid, 'ACTIVE', '', by);
+    emit('AI_AGENT_STATE', { jid, state: 'ACTIVE', reason: '', changedBy: by });
+    return { ok: true, jid, aiState: 'ACTIVE' };
   });
 
   app.post('/api/chats/status', async (req, reply) => {

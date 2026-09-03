@@ -1,5 +1,6 @@
 import type { FastifyInstance, preHandlerHookHandler } from 'fastify';
-import type { Config } from '../config.js';
+import { AI_MODEL_TIERS, AI_PROVIDERS, type Config } from '../config.js';
+import { FIXED_SAFETY_RULES, resolveModel } from '../services/aiProviders.js';
 import type { EventRelay } from '../services/events.js';
 import { SAFE_INSTANCE } from '../services/instances.js';
 import type { SettingKey, SettingsStore } from '../services/settings.js';
@@ -48,10 +49,32 @@ function publicSettings(cfg: Config) {
     coldWarmupStart: cfg.coldWarmupStart,
     coldRampWindowDays: cfg.coldRampWindowDays,
     notifyInstances: cfg.notifyInstances,
+    aiAgentEnabled: cfg.aiAgentEnabled,
+    aiAgentInstances: cfg.aiAgentInstances,
+    aiAgentProvider: cfg.aiAgentProvider,
+    aiAgentModelTier: cfg.aiAgentModelTier,
+    aiAgentModel: cfg.aiAgentModel,
+    // Same convention as evo.apikey: the key itself never leaves the server,
+    // only whether one is set and its last four characters.
+    aiAgentApiKeySet: !!cfg.aiAgentApiKey,
+    aiAgentApiKeyHint: cfg.aiAgentApiKey ? `••••${cfg.aiAgentApiKey.slice(-4)}` : '',
+    aiAgentPersona: cfg.aiAgentPersona,
+    aiAgentRules: cfg.aiAgentRules,
+    aiAgentEscalation: cfg.aiAgentEscalation,
+    aiAgentMaxRepliesPerSession: cfg.aiAgentMaxRepliesPerSession,
+    aiAgentSessionGapHours: cfg.aiAgentSessionGapHours,
+    aiAgentDailyCap: cfg.aiAgentDailyCap,
+    aiAgentHandoffMessage: cfg.aiAgentHandoffMessage,
+    aiAgentReplyDelaySec: cfg.aiAgentReplyDelaySec,
+    /** The fixed safety rules, read-only — shown so the operator can see what
+     * their own instructions are layered on top of. */
+    aiAgentSafetyRules: FIXED_SAFETY_RULES,
+    aiAgentResolvedModel: resolveModel(cfg),
   };
 }
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const MAX_INSTRUCTION_CHARS = 8000;
 
 export function registerSettings(app: FastifyInstance, deps: SettingsDeps): void {
   const { cfg, store, relay, requireAdmin } = deps;
@@ -142,6 +165,67 @@ export function registerSettings(app: FastifyInstance, deps: SettingsDeps): void
       if (!names.every((n) => SAFE_INSTANCE.test(n)))
         return reply.code(400).send({ error: 'notifyInstances has an invalid channel name' });
       patch.notify_instances = names.join(',');
+    }
+
+    // ---- AI agent -------------------------------------------------------
+    // The master switch and the line allow-list are what let the AI speak to a
+    // customer at all, so they are validated exactly as strictly as the send
+    // safety knobs above — and the allow-list reuses notifyInstances' own
+    // channel-name guard rather than a looser one of its own.
+    if (typeof b.aiAgentEnabled === 'boolean')
+      patch.ai_agent_enabled = b.aiAgentEnabled ? '1' : '0';
+    if (b.aiAgentInstances !== undefined) {
+      if (
+        !Array.isArray(b.aiAgentInstances) ||
+        !b.aiAgentInstances.every((n) => typeof n === 'string')
+      )
+        return reply.code(400).send({ error: 'aiAgentInstances must be an array of channel names' });
+      const names = (b.aiAgentInstances as string[]).map((n) => n.trim()).filter(Boolean);
+      if (!names.every((n) => SAFE_INSTANCE.test(n)))
+        return reply.code(400).send({ error: 'aiAgentInstances has an invalid channel name' });
+      patch.ai_agent_instances = names.join(',');
+    }
+    if (b.aiAgentProvider != null) {
+      if (!AI_PROVIDERS.includes(b.aiAgentProvider as never))
+        return reply
+          .code(400)
+          .send({ error: `aiAgentProvider must be one of: ${AI_PROVIDERS.join(', ')}` });
+      patch.ai_agent_provider = String(b.aiAgentProvider);
+    }
+    if (b.aiAgentModelTier != null) {
+      if (!AI_MODEL_TIERS.includes(b.aiAgentModelTier as never))
+        return reply
+          .code(400)
+          .send({ error: `aiAgentModelTier must be one of: ${AI_MODEL_TIERS.join(', ')}` });
+      patch.ai_agent_model_tier = String(b.aiAgentModelTier);
+    }
+    if (typeof b.aiAgentModel === 'string') patch.ai_agent_model = b.aiAgentModel.trim().slice(0, 120);
+    // Empty/missing means "keep the saved one", exactly like the Evolution key.
+    if (typeof b.aiAgentApiKey === 'string' && b.aiAgentApiKey.trim())
+      patch.ai_agent_apikey = b.aiAgentApiKey.trim();
+    for (const [key, field] of [
+      ['ai_agent_persona', 'aiAgentPersona'],
+      ['ai_agent_rules', 'aiAgentRules'],
+      ['ai_agent_escalation', 'aiAgentEscalation'],
+    ] as const) {
+      if (typeof b[field] !== 'string') continue;
+      patch[key] = (b[field] as string).slice(0, MAX_INSTRUCTION_CHARS);
+    }
+    if (typeof b.aiAgentHandoffMessage === 'string')
+      patch.ai_agent_handoff_message = b.aiAgentHandoffMessage.trim().slice(0, 1000);
+    for (const [key, field, min, max] of [
+      ['ai_agent_max_replies', 'aiAgentMaxRepliesPerSession', 1, 500],
+      ['ai_agent_session_gap_hours', 'aiAgentSessionGapHours', 1, 8_760],
+      ['ai_agent_daily_cap', 'aiAgentDailyCap', 0, 100_000],
+      ['ai_agent_reply_delay_sec', 'aiAgentReplyDelaySec', 0, 3_600],
+    ] as const) {
+      if (b[field] == null) continue;
+      const n = Number(b[field]);
+      if (!Number.isInteger(n) || n < min || n > max)
+        return reply
+          .code(400)
+          .send({ error: `${field} must be an integer between ${min} and ${max}` });
+      patch[key] = String(n);
     }
 
     // The saved apikey is sent wherever base points — make redirections loud.

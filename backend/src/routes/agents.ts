@@ -60,11 +60,19 @@ export function registerAgents(
     const email = cfg.agentsEnabled ? emailFromRequest(req) : null;
     const requester = email ? agents.byEmail(email) : null;
     const isAdmin = !requester || requester.role === 'admin';
-    return agents.all().map((a) => ({
-      ...a,
-      instances: isAdmin ? a.instances : null,
-      effectivePerms: effectivePerms(a),
-    }));
+    // The synthetic AI sender is filtered out here rather than in each client:
+    // this is the HUMAN roster (the "sent by" chips, the assignment picker, the
+    // Settings agent table), and nothing in it should offer to assign a chat to
+    // a bot. Its chat-bubble badge is unaffected — that comes from
+    // /api/message-agents, which reads the row directly.
+    return agents
+      .all()
+      .filter((a) => !a.isBot)
+      .map((a) => ({
+        ...a,
+        instances: isAdmin ? a.instances : null,
+        effectivePerms: effectivePerms(a),
+      }));
   });
 
   app.put('/api/agents/:email', { preHandler: requireAdmin }, async (req, reply) => {

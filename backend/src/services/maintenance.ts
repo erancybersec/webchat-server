@@ -169,6 +169,18 @@ export class MaintenanceService {
       this.db.prepare(`DELETE FROM message_reads WHERE read_at < ?`).run(cutoff);
       // shared unread state: a row per chat that received traffic — prune stale ones
       this.db.prepare(`DELETE FROM chat_unread WHERE updated_at < ?`).run(cutoff);
+      // AI agent: the per-turn audit log, the daily-cap ledger, and settled
+      // queue rows. ai_agent_chat_state is NOT swept — it is the AI's only
+      // memory of a lead, and losing it silently would re-ask a returning
+      // customer everything they already told us.
+      this.db.prepare(`DELETE FROM ai_agent_audit_log WHERE created_at < ?`).run(cutoff);
+      this.db.prepare(`DELETE FROM ai_agent_replies WHERE sent_at < ?`).run(cutoff);
+      this.db
+        .prepare(
+          `DELETE FROM ai_agent_pending_sends
+           WHERE status IN ('sent','failed','canceled') AND created_at < ?`,
+        )
+        .run(cutoff);
       const e = this.db.prepare(`DELETE FROM message_edits WHERE edited_at < ?`).run(cutoff).changes;
       const r = this.db
         .prepare(`DELETE FROM reminders WHERE status IN ('fired','dismissed') AND due_at < ?`)

@@ -581,4 +581,169 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE recipient_lists ADD COLUMN created_by TEXT;
     `,
   },
+  {
+    id: '024-ai-agent',
+    sql: `
+      -- Per-chat AI control + the ONLY per-lead memory the AI keeps — AI-internal
+      -- conversation memory, not a CRM/business record.
+      --
+      -- state: AI-internal reason it isn't answering. Human ownership is NEVER
+      -- represented here — chat_assignments stays the sole record of that.
+      --   'ACTIVE'            — normal operation
+      --   'HANDOFF_REQUESTED' — respond_to_lead returned handoff=true, unsupported
+      --                         media, or the engine never got a valid final response
+      --   'PAUSED'            — a resume latch set by "Take Over", not a mirror of
+      --                         assignment: a chat a human released stays paused
+      --                         until someone explicitly resumes the AI
+      --   'LIMIT_REACHED'     — the PER-SESSION cap was hit. The GLOBAL daily cap
+      --                         never sets this — it isn't a fact about any one
+      --                         chat, so no chat should need a manual resume for it.
+      --
+      -- facts: fixed-schema JSON (LeadContext), written only from the
+      -- \`memory_updates\` field of respond_to_lead's structured result through a
+      -- server-side ALLOWLIST.
+      --
+      -- summary/summary_through_message_id: a cursor into the Evolution thread.
+      --
+      -- reply_count/session_started_at/last_activity_at: PER-SESSION reply cap. A
+      -- gap of aiAgentSessionGapHours since last_activity_at starts a fresh
+      -- session. last_activity_at is bumped on every inbound message the gate
+      -- accepts — not only on a successful AI send, so a delayed or blocked AI
+      -- can't make the session clock look idle while the customer keeps writing.
+      CREATE TABLE ai_agent_chat_state (
+        chat_jid                   TEXT PRIMARY KEY,
+        state                      TEXT NOT NULL DEFAULT 'ACTIVE',
+        reason                     TEXT,
+        changed_by                 TEXT,
+        facts                      TEXT NOT NULL DEFAULT '{}',
+        summary                    TEXT NOT NULL DEFAULT '',
+        summary_through_message_id TEXT,
+        reply_count                INTEGER NOT NULL DEFAULT 0,
+        session_started_at         TEXT,
+        last_activity_at           TEXT,
+        updated_at                 TEXT NOT NULL
+      );
+
+      -- Distinguishes the synthetic AI sender row from real agents everywhere
+      -- agents.* is read (roster table, assignment picker, message_agents badges).
+      ALTER TABLE agents ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0;
+
+      -- Stable knowledge only — policies/FAQ. Retrieved via search_knowledge.
+      -- Plain keyword/category matching (no vector DB needed at this scale).
+      CREATE TABLE knowledge_articles (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        title      TEXT NOT NULL,
+        category   TEXT NOT NULL DEFAULT '',
+        content    TEXT NOT NULL,
+        keywords   TEXT NOT NULL DEFAULT '',
+        active     INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_knowledge_articles_active ON knowledge_articles(active);
+
+      -- Structured, operator-entered dynamic business data — one table rather than
+      -- normalizing branches/courses/prices/offers into four; the four narrow
+      -- retrieval tools are filtered projections of it.
+      -- age_group is a first-class filter column — never inferred from \`title\`.
+      -- availability_updated_at is DELIBERATELY separate from updated_at: it's
+      -- stamped only when spots_left is actually rechecked/edited, so editing
+      -- notes/price/schedule can never make stale spots-left data look fresh.
+      CREATE TABLE studio_offerings (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch                  TEXT NOT NULL DEFAULT '',
+        title                   TEXT NOT NULL,
+        age_group               TEXT NOT NULL DEFAULT '', -- 'child' | 'teen' | 'adult' | '' (unspecified/all ages)
+        level                   TEXT NOT NULL DEFAULT '',
+        day_of_week             TEXT NOT NULL DEFAULT '', -- 'sun'..'sat', or '' if not schedule-shaped
+        time                    TEXT NOT NULL DEFAULT '', -- 'HH:MM'
+        price                   TEXT NOT NULL DEFAULT '', -- free text ("₪120/mo")
+        spots_left              INTEGER,                  -- NULL = not tracked
+        availability_updated_at TEXT,                     -- stamped only on a spots_left recheck/edit
+        is_offer                INTEGER NOT NULL DEFAULT 0,
+        notes                   TEXT NOT NULL DEFAULT '',
+        active                  INTEGER NOT NULL DEFAULT 1,
+        valid_until             TEXT,                     -- NULL allowed for courses/prices only
+        updated_at              TEXT NOT NULL
+      );
+      CREATE INDEX idx_studio_offerings_active ON studio_offerings(active, is_offer);
+
+      -- Global daily cost cap ledger — one row per AI-sent reply (handoff
+      -- acknowledgements included), mirroring the cold_sends counter pattern.
+      CREATE TABLE ai_agent_replies (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        instance TEXT NOT NULL DEFAULT '',
+        chat_jid TEXT NOT NULL,
+        sent_at  TEXT NOT NULL
+      );
+      CREATE INDEX idx_ai_agent_replies_sent_at ON ai_agent_replies(sent_at);
+
+      -- Delayed/debounced sends — crash-safe lifecycle. V1 only creates
+      -- kind='reply' rows; 'lead_opener' is reserved for the V1.1 external-lead
+      -- webhook so that work needs no new migration.
+      CREATE TABLE ai_agent_pending_sends (
+        id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind                       TEXT NOT NULL,                   -- 'reply' (V1) | 'lead_opener' (reserved)
+        chat_jid                   TEXT,
+        instance                   TEXT NOT NULL DEFAULT '',
+        due_at                     TEXT NOT NULL,
+        status                     TEXT NOT NULL DEFAULT 'pending', -- pending|processing|sent|failed|canceled
+        claimed_at                 TEXT,
+        lease_until                TEXT,
+        attempt_count              INTEGER NOT NULL DEFAULT 0,
+        -- WHY a failed/canceled row ended that way — drives retry safety:
+        --   'pre_send_error'     — threw before Sender.sendOne was ever called; safe to retry once
+        --   'ambiguous_delivery' — timeout/error during or after the send call; NEVER auto-retried
+        --   'stale_context'      — a newer inbound message arrived after this row's context was built
+        --   'human_takeover'     — a human claimed the chat before send
+        --   'orphaned_restart'   — still 'processing' past its lease after a crash/restart
+        --   'daily_cap'          — NOT a failure — the row is simply re-queued
+        failure_kind               TEXT,
+        outgoing_message_id        TEXT,
+        last_error                 TEXT,
+        audit_log_id               INTEGER, -- the row this send's outcome gets written back onto
+        history_through_message_id TEXT,
+        created_at                 TEXT NOT NULL
+      );
+      CREATE INDEX idx_ai_agent_pending_sends_due ON ai_agent_pending_sends(status, due_at);
+      CREATE UNIQUE INDEX idx_ai_agent_pending_sends_reply_chat
+        ON ai_agent_pending_sends(chat_jid) WHERE kind = 'reply' AND status = 'pending';
+
+      -- Execution audit log — one row per AI turn. Created right after
+      -- generation, FINALIZED after the send-time checks (the engine does not
+      -- know the delivery outcome at generation time). Does not duplicate the
+      -- full summary/facts per row — prompt_snapshot + memory_updates are enough.
+      -- prompt_snapshot exists because a hash alone can't reconstruct anything
+      -- once the operator edits Persona/Rules/Escalation; the prompt is small and
+      -- this table already follows the normal retention sweep.
+      CREATE TABLE ai_agent_audit_log (
+        id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at                 TEXT NOT NULL,
+        chat_jid                   TEXT NOT NULL,
+        instance                   TEXT NOT NULL DEFAULT '',
+        contact_type               TEXT NOT NULL DEFAULT 'unknown',
+        ai_state_before            TEXT NOT NULL,
+        provider                   TEXT NOT NULL,
+        model                      TEXT NOT NULL,
+        prompt_hash                TEXT NOT NULL, -- cheap fingerprint/dedup key
+        prompt_snapshot            TEXT NOT NULL, -- the safety-rules+persona+rules+escalation text used
+        history_through_message_id TEXT,
+        knowledge_used             TEXT NOT NULL DEFAULT '[]',
+        tools_called               TEXT NOT NULL DEFAULT '[]', -- JSON [{id,name,args,result}], bounded
+        memory_updates             TEXT NOT NULL DEFAULT '{}',
+        response_text              TEXT NOT NULL DEFAULT '',
+        handoff                    INTEGER NOT NULL DEFAULT 0,
+        handoff_reason             TEXT,
+        input_tokens               INTEGER,
+        output_tokens              INTEGER,
+        cache_read_tokens          INTEGER,
+        cache_write_tokens         INTEGER,
+        latency_ms                 INTEGER,
+        -- filled in at finalize time, once the send-time outcome is known:
+        delivery_outcome           TEXT, -- 'sent' | 'canceled_stale' | 'canceled_takeover' | 'failed'
+        outgoing_message_id        TEXT,
+        error                      TEXT
+      );
+      CREATE INDEX idx_ai_agent_audit_log_chat ON ai_agent_audit_log(chat_jid, created_at);
+    `,
+  },
 ];

@@ -138,3 +138,70 @@ export class ColdSendQuota {
       .changes;
   }
 }
+
+export interface AiQuotaConfig {
+  /** Global AI replies per calendar day, across every chat and every line. */
+  aiAgentDailyCap: number;
+}
+
+export interface AiQuotaState {
+  spent: number;
+  cap: number;
+  remaining: number;
+}
+
+/** Local midnight, as the ISO string the ledger's sent_at values compare against. */
+function startOfLocalDay(now: Date): string {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+}
+
+/**
+ * The AI's global daily COST ceiling — same rolling-ledger shape as
+ * ColdSendQuota, different unit and different recovery.
+ *
+ * The unit is one AI-sent reply (a handoff acknowledgement included: it is a
+ * real WhatsApp message that cost a model call, not a side channel). The window
+ * is the calendar day in the server's zone, not a rolling 24h, because the point
+ * is a predictable daily spend that resets on its own at midnight — and because
+ * nothing about it is a fact about any one chat, hitting it never writes
+ * per-chat state. A blocked send is re-queued and picked up by the first poll
+ * after the reset, with no human intervention.
+ */
+export class AiReplyQuota {
+  private readonly q;
+
+  constructor(
+    db: Db,
+    private readonly cfg: AiQuotaConfig,
+  ) {
+    this.q = {
+      spent: db.prepare(`SELECT COUNT(*) AS n FROM ai_agent_replies WHERE sent_at >= ?`),
+      put: db.prepare(
+        `INSERT INTO ai_agent_replies (instance, chat_jid, sent_at) VALUES (?, ?, ?)`,
+      ),
+      purge: db.prepare(`DELETE FROM ai_agent_replies WHERE sent_at <= ?`),
+    };
+  }
+
+  spent(now = new Date()): number {
+    return (this.q.spent.get(startOfLocalDay(now)) as { n: number }).n;
+  }
+
+  remaining(now = new Date()): number {
+    return Math.max(0, this.cfg.aiAgentDailyCap - this.spent(now));
+  }
+
+  state(now = new Date()): AiQuotaState {
+    const spent = this.spent(now);
+    return { spent, cap: this.cfg.aiAgentDailyCap, remaining: Math.max(0, this.cfg.aiAgentDailyCap - spent) };
+  }
+
+  record(instance: string, chatJid: string, now = new Date()): void {
+    this.q.put.run(instance, chatJid, now.toISOString());
+  }
+
+  /** Ledger rows outside the retention window say nothing about today's spend. */
+  purge(now = new Date(), keepDays = 30): number {
+    return this.q.purge.run(new Date(now.getTime() - keepDays * DAY_MS).toISOString()).changes;
+  }
+}

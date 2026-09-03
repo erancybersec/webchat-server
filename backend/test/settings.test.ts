@@ -44,6 +44,25 @@ describe('/api/settings', () => {
       coldWarmupStart: 10,
       coldRampWindowDays: 30,
       notifyInstances: [],
+      // AI agent — OFF with an empty line allow-list, the two things that have
+      // to be set deliberately before it can speak to anyone
+      aiAgentEnabled: false,
+      aiAgentInstances: [],
+      aiAgentProvider: 'anthropic',
+      aiAgentModelTier: 'fast',
+      aiAgentModel: '',
+      aiAgentApiKeySet: false,
+      aiAgentApiKeyHint: '',
+      aiAgentPersona: '',
+      aiAgentRules: '',
+      aiAgentEscalation: '',
+      aiAgentMaxRepliesPerSession: 20,
+      aiAgentSessionGapHours: 48,
+      aiAgentDailyCap: 200,
+      aiAgentHandoffMessage: 'Let me get a team member to help with that.',
+      aiAgentReplyDelaySec: 10,
+      aiAgentSafetyRules: expect.stringContaining('Never fabricate studio information'),
+      aiAgentResolvedModel: 'claude-haiku-4-5-20251001',
       // the zone every 'HH:MM' setting is read in, plus the server's clock —
       // the UI labels quiet hours and sending windows with them
       timezone: expect.any(String),

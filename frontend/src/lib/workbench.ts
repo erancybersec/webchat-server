@@ -31,7 +31,10 @@ export function useNeedsApproval(recipientCount: number): { needed: boolean; thr
  * whatever jid the chat list dedup picked onto that key.
  */
 
-const META_EVENTS = ['CHAT_ASSIGNED', 'CHAT_STATUS', 'CHAT_TAGS'] as const;
+// AI_AGENT_STATE rides along: the AI pill lives in the same payload, so a
+// take-over, a handoff or a spent reply allowance updates every open tab the
+// same way an assignment does.
+const META_EVENTS = ['CHAT_ASSIGNED', 'CHAT_STATUS', 'CHAT_TAGS', 'AI_AGENT_STATE'] as const;
 
 export function useChatMeta() {
   const qc = useQueryClient();
