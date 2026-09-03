@@ -64,6 +64,7 @@ const FILTERS = [
   { id: 'pending', label: 'Pending' },
   { id: 'resolved', label: 'Resolved' },
   { id: 'groups', label: 'Groups' },
+  { id: 'scheduled', label: 'Scheduled' },
   { id: 'archived', label: 'Archived' },
 ] as const;
 type FilterId = (typeof FILTERS)[number]['id'];
@@ -2099,6 +2100,26 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
     () => new Set((remindersQ.data ?? []).filter((r) => r.status === 'fired').map((r) => r.chatJid)),
     [remindersQ.data],
   );
+  // Shares the ['jobs'] cache with Thread's own scheduled-jobs query — same
+  // filter (pending, non-immediate), just fanned out across every recipient
+  // instead of one open chat, for the list row's scheduled indicator.
+  const jobsQ = useQuery({ queryKey: ['jobs'], queryFn: api.jobs.list, refetchInterval: 30_000 });
+  const scheduledByJid = useMemo(() => {
+    const map = new Map<string, { count: number; nextAt: string }>();
+    for (const j of jobsQ.data ?? []) {
+      if (j.status !== 'pending' || j.type === 'immediate') continue;
+      for (const r of j.recipients) {
+        const prev = map.get(r.id);
+        if (prev) {
+          prev.count += 1;
+          if (j.scheduledAt < prev.nextAt) prev.nextAt = j.scheduledAt;
+        } else {
+          map.set(r.id, { count: 1, nextAt: j.scheduledAt });
+        }
+      }
+    }
+    return map;
+  }, [jobsQ.data]);
   const [activeJid, setActiveJid] = useState<string | null>(null);
   useEffect(() => {
     onThreadOpenChange?.(!!activeJid);
@@ -2267,6 +2288,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
       if (archived.has(c.id)) return false;
       if (tab === 'unread' && !c.unreadCount) return false;
       if (tab === 'groups' && !c.isGroup) return false;
+      if (tab === 'scheduled' && !scheduledByJid.has(c.id)) return false;
       if (WORKBENCH_FILTERS.includes(tab)) {
         const m = rowMeta(c);
         if (tab === 'mine' && (!me.data?.email || m.assignee !== me.data.email)) return false;
@@ -2364,6 +2386,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
           {list.map((c) => {
             const wm = rowMeta(c);
             const assignedAgent = wm.assignee ? agentsByEmail.get(wm.assignee) : undefined;
+            const sched = scheduledByJid.get(c.id);
             return (
             // content-visibility lets the browser skip layout/paint for the
             // ~1000 off-screen rows of a real account's chat list
@@ -2462,6 +2485,20 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
                           <path d="M16 3a1 1 0 01.707 1.707L16 5.414V10l2.293 2.293A1 1 0 0117.586 14H13v6l-1 2-1-2v-6H6.414a1 1 0 01-.707-1.707L8 10V5.414l-.707-.707A1 1 0 018 3h8z" />
                         </svg>
                       )}
+                      {sched && (
+                        <svg
+                          className="h-3.5 w-3.5 text-amber-400"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                          viewBox="0 0 24 24"
+                          role="img"
+                        >
+                          <title>{`${sched.count} scheduled — next ${scheduleLabel(sched.nextAt)}`}</title>
+                          <circle cx="12" cy="12" r="9" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 3" />
+                        </svg>
+                      )}
                       <span
                         className={`text-xs ${c.unreadCount ? 'font-semibold text-wa-dark' : 'text-gray-400'}`}
                       >
@@ -2483,8 +2520,8 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
                         </>
                       )}
                     </span>
-                    {c.unreadCount > 0 &&
-                      (c.unreadDot ? (
+                    {c.unreadCount > 0 ? (
+                      c.unreadDot ? (
                         // WhatsApp-style "unread" flag: a plain green dot, no number
                         <span
                           className="h-3 w-3 shrink-0 rounded-full bg-wa"
@@ -2495,7 +2532,24 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
                         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-wa px-1 text-xs font-bold text-white">
                           {c.unreadCount > 99 ? '99+' : c.unreadCount}
                         </span>
-                      ))}
+                      )
+                    ) : (
+                      sched && (
+                        <span
+                          className="flex shrink-0 items-center gap-1 rounded-full border border-dashed border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
+                          title={`${sched.count} scheduled message${sched.count > 1 ? 's' : ''}`}
+                        >
+                          <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                            />
+                          </svg>
+                          {scheduleLabel(sched.nextAt)}
+                        </span>
+                      )
+                    )}
                   </div>
                 </div>
               </button>
