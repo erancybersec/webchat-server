@@ -7,6 +7,7 @@ import { useToast } from '../components/Toast';
 import { agentBadgeClass, agentLabel, useAgents, useMe } from '../lib/agents';
 import { api } from '../lib/api';
 import { isOngoingForChat } from '../lib/campaign';
+import { navigate as navigateTo } from '../lib/nav';
 import {
   canonJid,
   syncAliases,
@@ -1718,14 +1719,23 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                         </button>
                       </>
                     ) : (
-                      <button
-                        onClick={() => removeFromCampaign.mutate(job)}
-                        disabled={removeFromCampaign.isPending}
-                        title="Takes this number off the campaign's remaining sends — everyone else it's still going out to is untouched"
-                        className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        Remove number from this campaign
-                      </button>
+                      <>
+                        <button
+                          onClick={() => navigateTo({ job: job.id })}
+                          title="Open this campaign in History"
+                          className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-100"
+                        >
+                          View campaign
+                        </button>
+                        <button
+                          onClick={() => removeFromCampaign.mutate(job)}
+                          disabled={removeFromCampaign.isPending}
+                          title="Takes this number off the campaign's remaining sends — everyone else it's still going out to is untouched"
+                          className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          Remove number from this campaign
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

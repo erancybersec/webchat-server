@@ -1,6 +1,6 @@
 {
   "name": "webchat-backend",
-  "version": "2.50.3",
+  "version": "2.51.0",
   "description": "Backend for the webchat app: typed Evolution API gateway + SSE event relay, server-side scheduling with a resumable per-recipient send ledger, blacklist enforced on every send.",
   "license": "MIT",
   "type": "module",
