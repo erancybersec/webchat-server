@@ -790,11 +790,11 @@ function JobRow({
               className="h-4 w-4 accent-(--color-wa)"
             />
           )}
-          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[job.status]}`}>
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${STATUS_STYLE[job.status]}`}>
             {statusLabel(job.status)}
           </span>
           {scope === 'history' && (
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
+            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 capitalize">
               {jobOriginLabel(job)}
             </span>
           )}
@@ -1364,13 +1364,13 @@ export default function JobsPage({
           <button
             onClick={() => setFilter(filter === 'active' ? 'all' : 'active')}
             title="Actively sending, or pacing itself between batches — no operator action needed"
-            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+            className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ${
               filter === 'active'
                 ? 'ring-2 ring-wa bg-amber-100 text-amber-700'
                 : 'bg-amber-100 text-amber-700 opacity-80 hover:opacity-100'
             }`}
           >
-            🟢 Running ({counts.active})
+            running ({counts.active})
           </button>
         )}
         {/* literal 'running' is folded into the "Running" chip above — a
@@ -1380,7 +1380,7 @@ export default function JobsPage({
           <button
             key={s}
             onClick={() => setFilter(filter === s ? 'all' : s)}
-            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+            className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ${
               filter === s ? 'ring-2 ring-wa ' + STATUS_STYLE[s] : STATUS_STYLE[s] + ' opacity-80 hover:opacity-100'
             }`}
           >
