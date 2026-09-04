@@ -149,6 +149,8 @@ export function registerJobs(
   access?: InstanceAccess,
   /** Saved lists — enables "keep the ones that were not sent" (absent = off). */
   lists?: ListsStore,
+  /** The chat-side "Send now" button — one recipient's next owed item, right now. */
+  sendOneNow?: (jobId: string, recipient: string) => Promise<{ ok: boolean; error?: string }>,
 ): void {
   // A job acts on its instance when it FIRES — so the grant is checked on
   // every path that queues one (create/edit, restore, rerun), like approval.
@@ -447,6 +449,28 @@ export function registerJobs(
       return reply.code(400).send({ error: 'recipient required' });
     if (!jobs.removeRecipient(id, recipient))
       return reply.code(404).send({ error: 'that recipient is not on this job' });
+    return jobs.byId(id);
+  });
+
+  // The chat-side "Send now" (and "Send & remove") button: fires just this
+  // recipient's next owed item immediately, bypassing the batch scheduler.
+  // Same 'running' guard as remove-recipient, and for the same reason — it
+  // claims a ledger row the scheduler's own in-flight pass might also hold.
+  app.post('/api/jobs/:id/send-now', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const j = jobs.byId(id);
+    if (!j) return reply.code(404).send({ error: 'not found' });
+    if (j.status === 'running')
+      return reply.code(409).send({ error: 'job is sending right now — try again in a moment' });
+    if (!instanceAllowed(req, j.instance))
+      return reply.code(403).send({ error: 'instance not allowed' });
+    const { recipient, alsoRemove } = (req.body ?? {}) as { recipient?: unknown; alsoRemove?: unknown };
+    if (typeof recipient !== 'string' || !recipient)
+      return reply.code(400).send({ error: 'recipient required' });
+    if (!sendOneNow) return reply.code(501).send({ error: 'not available' });
+    const result = await sendOneNow(id, recipient);
+    if (!result.ok) return reply.code(409).send({ error: result.error ?? 'send failed' });
+    if (alsoRemove === true) jobs.removeRecipient(id, recipient);
     return jobs.byId(id);
   });
 

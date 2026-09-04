@@ -370,4 +370,49 @@ describe('Scheduler', () => {
     expect(evo.calls).toHaveLength(2);
     expect(evo.calls.map((c) => c.body.text).sort()).toEqual(['hello', 'second']);
   });
+
+  describe('sendOneNow', () => {
+    it('sends only the one recipient their next owed item, personalized, without touching anyone else', async () => {
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: [
+          { id: '972521111111', name: 'Dana' },
+          { id: '972522222222', name: 'Gil' },
+        ],
+        items: [{ type: 'text', data: { text: 'hi {{first_name}}' } }, { type: 'voice', data: {} }],
+        batch: { size: 1, pauseMin: 0 },
+      });
+      await scheduler.tick(); // runs item 0 for one recipient, then pauses
+      expect(jobs.byId('j1')!.status).toBe('paused');
+      const sentSoFar = evo.sentTo();
+      expect(sentSoFar).toHaveLength(1);
+
+      const untouched = sentSoFar[0] === '972521111111' ? '972522222222' : '972521111111';
+      const untouchedName = untouched === '972521111111' ? 'Dana' : 'Gil';
+      const before = evo.calls.length;
+      const result = await scheduler.sendOneNow('j1', untouched);
+
+      expect(result).toEqual({ ok: true });
+      expect(evo.calls).toHaveLength(before + 1);
+      expect(evo.calls.at(-1)!.body.text).toBe(`hi ${untouchedName}`);
+      expect(evo.calls.at(-1)!.body.number).toBe(untouched);
+      // item 0 settled for them; item 1 (voice) is still their next owed item
+      const rows = jobs.allSends('j1').filter((s) => s.recipient === untouched);
+      expect(rows.find((s) => s.itemIndex === 0)!.status).toBe('sent');
+      expect(rows.find((s) => s.itemIndex === 1)!.status).toBe('pending');
+      // the job's own state (still paused, awaiting the batch continue) is untouched
+      expect(jobs.byId('j1')!.status).toBe('paused');
+    });
+
+    it('reports a clear error instead of throwing when nothing is pending for that recipient', async () => {
+      jobs.upsert({ id: 'j1', scheduledAt: PAST, recipients: [r('972521111111')], items: [textItem] });
+      await scheduler.tick();
+      expect(jobs.byId('j1')!.status).toBe('done');
+
+      const result = await scheduler.sendOneNow('j1', '972521111111');
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/nothing pending/i);
+    });
+  });
 });

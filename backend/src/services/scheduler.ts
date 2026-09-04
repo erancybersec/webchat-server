@@ -629,6 +629,66 @@ export class Scheduler {
   }
 
   /**
+   * Ad-hoc single-recipient send — the chat-side "Send now" button on a
+   * campaign's ghost bubble. Sends only the one item this recipient is still
+   * owed, right now, using the same personalization and ledger bookkeeping as
+   * a normal batch send, but entirely outside the batch loop. The route
+   * guards this to jobs that are not 'running', so this can never race the
+   * scheduler claiming the same ledger row out from under it.
+   */
+  async sendOneNow(jobId: string, recipient: string): Promise<{ ok: boolean; error?: string }> {
+    const job = this.jobs.byId(jobId);
+    if (!job) return { ok: false, error: 'job not found' };
+    const s = this.jobs.pendingSends(jobId).find((x) => x.recipient === recipient);
+    if (!s) return { ok: false, error: 'nothing pending for that recipient' };
+    const item = job.items[s.itemIndex];
+    if (!item) return { ok: false, error: `item ${s.itemIndex} missing` };
+
+    const name = job.recipients.find((r) => r.id === recipient)?.name ?? '';
+    let waName = '';
+    if (usesWaName([item])) {
+      try {
+        waName =
+          (await this.contacts?.names(job.instance ?? undefined))?.get(
+            digitsOnly(recipient.split('@')[0]),
+          ) ?? '';
+      } catch {
+        /* {{wa_name}} falls back to the compose-time name */
+      }
+    }
+    const agentName = job.sentBy ? (this.attribution?.displayName(job.sentBy) ?? '') : '';
+
+    let outcome: Awaited<ReturnType<Sender['sendOne']>>;
+    try {
+      outcome = await this.sender.sendOne(
+        recipient,
+        personalizeItem(item, { name, waName, agentName }),
+        { instance: job.instance ?? undefined, enforceVerification: this.cfg.verifyEnabled !== false },
+      );
+    } catch (e) {
+      const error = String((e as Error).message ?? e);
+      this.jobs.markSendFailedAttempt(s, error, this.cfg.sendMaxAttempts);
+      return { ok: false, error };
+    }
+    if (outcome.status === 'skipped') {
+      const error = outcome.reason === 'not_on_whatsapp' ? 'not on WhatsApp' : 'on the blacklist';
+      this.jobs.markSendDone(
+        s,
+        'skipped',
+        undefined,
+        outcome.reason === 'not_on_whatsapp' ? 'not on WhatsApp — skipped, not retried' : 'on the blacklist',
+      );
+      this.emit('JOB_PROGRESS', { jobId, total: 0, sent: 0, skipped: 1, failed: 0, done: false });
+      return { ok: false, error };
+    }
+    this.jobs.markSendDone(s, 'sent', outcome.messageId);
+    if (outcome.messageId && job.sentBy)
+      this.attribution?.recordMessage(outcome.messageId, job.sentBy, toChatJid(recipient), job.instance);
+    this.emit('JOB_PROGRESS', { jobId, total: 0, sent: 1, skipped: 0, failed: 0, done: false });
+    return { ok: true };
+  }
+
+  /**
    * Recurring jobs: when an occurrence reaches a terminal state, queue the
    * next one. Gated on the Settings toggle (off by default) so a stray rule
    * can never loop sends; a user cancel ends the series.

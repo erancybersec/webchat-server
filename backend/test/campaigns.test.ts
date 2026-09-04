@@ -817,6 +817,56 @@ describe('campaign control API', () => {
     ).toBe(409);
   });
 
+  it('send-now fires just one recipient\'s next item immediately, and can drop them from the campaign in the same call', async () => {
+    const job = await runOneTick({ ...base, batch: { size: 1, pauseMin: 0 } });
+    expect(t.jobs.byId(job.id)!.status).toBe('paused');
+    const sentFirst = t.evo.sentTo()[0]!;
+    const other = sentFirst === '972521111111' ? '972522222222' : '972521111111';
+    const before = t.evo.calls.length;
+
+    // sends the untouched recipient's item right now — no waiting for a resume
+    const res = await post(`/api/jobs/${job.id}/send-now`, { recipient: other });
+    expect(res.statusCode).toBe(200);
+    expect(t.evo.calls).toHaveLength(before + 1);
+    expect(t.evo.calls.at(-1)!.body.number).toBe(other);
+    expect(t.jobs.allSends(job.id).find((s) => s.recipient === other)!.status).toBe('sent');
+    // the campaign itself is untouched — still paused, still has both recipients
+    expect(t.jobs.byId(job.id)!.status).toBe('paused');
+    expect(res.json().recipients.map((r: { id: string }) => r.id).sort()).toEqual(
+      ['972521111111', '972522222222'].sort(),
+    );
+
+    // already-sent recipient — nothing left to send them
+    expect((await post(`/api/jobs/${job.id}/send-now`, { recipient: sentFirst })).statusCode).toBe(409);
+    // missing/blank body
+    expect((await post(`/api/jobs/${job.id}/send-now`, {})).statusCode).toBe(400);
+    // unknown job
+    expect((await post('/api/jobs/nope/send-now', { recipient: other })).statusCode).toBe(404);
+    // refused while literally mid-send
+    t.db.prepare(`UPDATE jobs SET status='running' WHERE id=?`).run(job.id);
+    expect((await post(`/api/jobs/${job.id}/send-now`, { recipient: other })).statusCode).toBe(409);
+  });
+
+  it('send-now with alsoRemove sends the item and then drops the recipient from the campaign', async () => {
+    const job = await runOneTick({
+      ...base,
+      items: [{ type: 'text', data: { text: 'hello' } }, { type: 'text', data: { text: 'second' } }],
+      batch: { size: 1, pauseMin: 0 },
+    });
+    const sentFirst = t.evo.sentTo()[0]!;
+    const other = sentFirst === '972521111111' ? '972522222222' : '972521111111';
+
+    // only their first item is due — alsoRemove drops the still-pending second one too
+    const res = await post(`/api/jobs/${job.id}/send-now`, { recipient: other, alsoRemove: true });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().recipients.map((r: { id: string }) => r.id)).toEqual([sentFirst]);
+    // the item send-now just fired survives (it already went out); the still-
+    // pending second item is what alsoRemove was for
+    const rows = t.jobs.allSends(job.id).filter((s) => s.recipient === other);
+    expect(rows.find((s) => s.itemIndex === 0)!.status).toBe('sent');
+    expect(rows.some((s) => s.status === 'pending')).toBe(false);
+  });
+
   it('continues a campaign that was stopped after it had started', async () => {
     const job = (await post('/api/jobs', base)).json();
     t.db.prepare(`UPDATE jobs SET started_at=?, status='cancelled' WHERE id=?`).run(base.scheduledAt, job.id);

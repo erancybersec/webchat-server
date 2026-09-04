@@ -364,6 +364,10 @@ export const api = {
     // campaign" from that contact's own chat. Sent rows are untouched.
     removeRecipient: (id: string, recipient: string) =>
       post<Job>(`/api/jobs/${encodeURIComponent(id)}/remove-recipient`, { recipient }),
+    // Fire just this recipient's next owed item right now, bypassing the batch
+    // scheduler — the chat-side "Send now" / "Send & remove" buttons.
+    sendNow: (id: string, recipient: string, alsoRemove?: boolean) =>
+      post<Job>(`/api/jobs/${encodeURIComponent(id)}/send-now`, { recipient, alsoRemove }),
     cancel: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/cancel`),
     restore: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/restore`),
     rerun: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/rerun`),

@@ -1041,6 +1041,18 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
     onError: (e) => setSendError(String((e as Error).message)),
   });
 
+  // Fire just this recipient's next owed item right now, bypassing the batch
+  // scheduler entirely — everyone else in the campaign is untouched. Same
+  // recipient-id resolution as removeFromCampaign, for the same reason.
+  const sendNowInCampaign = useMutation({
+    mutationFn: (vars: { job: Job; alsoRemove: boolean }) => {
+      const recipientId = vars.job.recipients.find((r) => phoneKey(r.id) === phoneKey(jid))?.id ?? jid;
+      return api.jobs.sendNow(vars.job.id, recipientId, vars.alsoRemove);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+    onError: (e) => setSendError(String((e as Error).message)),
+  });
+
   // Pull a scheduled job's text back into the composer, then drop the job.
   function editScheduled(job: Job) {
     const text = (job.items[0]?.data?.text ?? job.items[0]?.data?.caption) as string | undefined;
@@ -1698,7 +1710,7 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                   <div className="whitespace-pre-wrap break-words text-sm text-gray-800" dir="auto">
                     {jobPreview(job, pendingByJob.get(job.id)?.get(phoneKey(jid)))}
                   </div>
-                  <div className="mt-1.5 flex justify-end gap-1.5">
+                  <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
                     {/* Edit/Send now/Cancel act on the WHOLE job — safe only
                         when this chat is its one and only recipient. A
                         multi-recipient campaign gets "Remove me" instead,
@@ -1732,6 +1744,22 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                           className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 hover:bg-gray-100"
                         >
                           View campaign
+                        </button>
+                        <button
+                          onClick={() => sendNowInCampaign.mutate({ job, alsoRemove: false })}
+                          disabled={sendNowInCampaign.isPending}
+                          title="Sends this recipient's next item right now, instead of waiting for the campaign to reach them"
+                          className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          Send now
+                        </button>
+                        <button
+                          onClick={() => sendNowInCampaign.mutate({ job, alsoRemove: true })}
+                          disabled={sendNowInCampaign.isPending}
+                          title="Sends this recipient's next item right now, then takes them off the campaign's remaining sends"
+                          className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          Send &amp; remove
                         </button>
                         <button
                           onClick={() => removeFromCampaign.mutate(job)}
