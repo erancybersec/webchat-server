@@ -1700,15 +1700,26 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
               </span>
               <div className="h-px flex-1 bg-amber-300/40" />
             </div>
-            {scheduledJobs.map((job) => (
+            {scheduledJobs.map((job) => {
+              const itemIndex = pendingByJob.get(job.id)?.get(phoneKey(jid)) ?? 0;
+              return (
               <div key={job.id} className="flex justify-end">
                 <div className="max-w-[75%] rounded-xl rounded-br-sm border border-dashed border-amber-400 bg-amber-50/80 px-3 py-2">
                   <div className="mb-0.5 flex items-center gap-1 text-[11px] font-medium text-amber-700">
                     <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                     {scheduleLabel(job.scheduledAt)}
+                    {/* A multi-item sequence (e.g. text then voice note) still
+                        owes this recipient more than the one item previewed
+                        below — without this, a 2-item campaign reads as one
+                        lone scheduled message instead of two. */}
+                    {job.items.length > 1 && (
+                      <span className="font-normal text-amber-600">
+                        · message {itemIndex + 1} of {job.items.length}
+                      </span>
+                    )}
                   </div>
                   <div className="whitespace-pre-wrap break-words text-sm text-gray-800" dir="auto">
-                    {jobPreview(job, pendingByJob.get(job.id)?.get(phoneKey(jid)))}
+                    {jobPreview(job, itemIndex)}
                   </div>
                   <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
                     {/* Edit/Send now/Cancel act on the WHOLE job — safe only
@@ -1774,7 +1785,8 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
         <div ref={bottomRef} />
