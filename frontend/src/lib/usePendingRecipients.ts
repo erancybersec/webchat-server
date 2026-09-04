@@ -1,7 +1,8 @@
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
+import { useBusEvent } from './eventBus';
 import { phoneKey } from './phone';
-import type { Job } from '../types';
+import type { Job, JobProgress } from '../types';
 
 /**
  * Which of a multi-recipient campaign's own recipients are STILL pending,
@@ -14,6 +15,7 @@ import type { Job } from '../types';
  * actually need the ledger to answer the question.
  */
 export function usePendingRecipientKeys(jobs: Job[]): Map<string, Set<string>> {
+  const qc = useQueryClient();
   const multi = jobs.filter((j) => j.recipients.length > 1);
   const results = useQueries({
     queries: multi.map((j) => ({
@@ -21,6 +23,15 @@ export function usePendingRecipientKeys(jobs: Job[]): Map<string, Set<string>> {
       queryFn: () => api.jobs.recipientsByStatus(j.id, 'pending'),
       staleTime: 15_000,
     })),
+  });
+  // Every send — not just a batch boundary — moves one recipient off the
+  // pending ledger, and that's exactly what decides whether this chat still
+  // shows the "Scheduled" bubble for them. Without this, a campaign left open
+  // in a chat keeps showing a just-sent recipient as pending until something
+  // else happens to refetch (tab refocus, staleTime lapsing).
+  useBusEvent('JOB_PROGRESS', (data) => {
+    const p = data as JobProgress | null;
+    if (p?.jobId) void qc.invalidateQueries({ queryKey: ['job-pending-recipients', p.jobId] });
   });
   const map = new Map<string, Set<string>>();
   multi.forEach((j, i) => {
