@@ -406,17 +406,24 @@ export class Scheduler {
           this.log(`[job ${job.id}] interrupted by shutdown — resumes on next boot`);
           return;
         }
-        // a cancel or a pause can land mid-run (campaigns run for hours) —
-        // both stop after the send in flight, with unsent rows left pending
-        const live = this.jobs.byId(job.id)?.status;
-        if (live === 'cancelled') {
+        // A cancel or a pause can land mid-run (campaigns run for hours) —
+        // both stop after the send in flight, with unsent rows left pending.
+        // Re-read the WHOLE row, not just status: an operator can pause, edit
+        // the message, and resume inside one sleep gap — by the time we look,
+        // status is back to 'pending' (matching neither check below) and we'd
+        // otherwise keep sending from the stale `job` this closure started
+        // with, silently ignoring the edit. Adopting the fresh row here means
+        // an edit is picked up on the very next send either way.
+        const liveJob = this.jobs.byId(job.id);
+        if (!liveJob || liveJob.status === 'cancelled') {
           cancelled = true;
           break;
         }
-        if (live === 'paused') {
+        if (liveJob.status === 'paused') {
           pausedByOperator = true;
           break;
         }
+        job = liveJob;
         // 'pause at HH:MM' reached — stop, and pick up at resumeAt when set
         if (cutoff && Date.now() >= cutoff.getTime()) {
           interrupted = {

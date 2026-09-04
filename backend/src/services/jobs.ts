@@ -98,6 +98,14 @@ const HISTORY_SCOPE = `(status IN ('done','failed','missed')
 // waiting for a human, and its ledger is the record of who already got it.
 const LIVE_STATUSES = `('pending','running','paused','pending_approval')`;
 
+// A campaign genuinely in flight: literally 'running' (a message on the wire
+// right now — true for a heartbeat between sends) or 'pending' with a
+// started_at (paced between batches/a sending window on its own, no operator
+// action needed). Distinct from a plain 'pending' job that has never fired —
+// that one just has no started_at yet. Not 'paused': that already waits for
+// a human and has its own chip.
+const ACTIVE_CAMPAIGN = `(status='running' OR (status='pending' AND started_at IS NOT NULL))`;
+
 // Per-instance separation. A row's effective instance is its own, or the server
 // default when blank (matching how a job resolves instance || default at fire
 // time). @eff='' = no filter (single-instance deployments, internal callers).
@@ -269,6 +277,35 @@ export class JobStore {
       countHistory: db.prepare(
         `SELECT status, COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} GROUP BY status`,
       ),
+      // "Running" chip: a pseudo-status overlaying the per-status counts above
+      // (its jobs are also counted under 'running'/'pending' there) rather
+      // than a disjoint bucket, so it needs its own count and page queries.
+      countScheduledActive: db.prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE ${SCHEDULED_SCOPE} AND ${ACTIVE_CAMPAIGN} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH}`,
+      ),
+      countHistoryActive: db.prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${ACTIVE_CAMPAIGN} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH}`,
+      ),
+      pageScheduledActiveDesc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
+        AND ${ACTIVE_CAMPAIGN}
+        AND ${INSTANCE_SCOPE}
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
+      pageScheduledActiveAsc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
+        AND ${ACTIVE_CAMPAIGN}
+        AND ${INSTANCE_SCOPE}
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
+      pageHistoryActiveDesc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
+        AND ${ACTIVE_CAMPAIGN}
+        AND ${INSTANCE_SCOPE}
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
+      pageHistoryActiveAsc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
+        AND ${ACTIVE_CAMPAIGN}
+        AND ${INSTANCE_SCOPE}
+        AND ${JOB_TEXT_MATCH}
+        ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
       // @tzMod shifts scheduled_at (stored UTC) to the viewer's local time
       // before taking the date, e.g. '180 minutes' for UTC+3 — otherwise a
       // late-evening local job buckets under the wrong day, silently
@@ -408,6 +445,10 @@ export class JobStore {
       sendDeletePending: db.prepare(
         `DELETE FROM job_sends WHERE job_id=? AND recipient=? AND status='pending'`,
       ),
+      // Same single-recipient drop, exposed directly (not only via a full
+      // upsert) so removing one number from a chat doesn't require resending
+      // the whole message sequence through the edit path.
+      updateRecipients: db.prepare(`UPDATE jobs SET recipients=@recipients WHERE id=@id`),
       // COALESCE, not a plain set: a skip records WHY in last_error, while a
       // plain send passes null and keeps whatever a previous failed attempt
       // left there (the ledger's history of the row is worth more than tidiness)
@@ -492,6 +533,25 @@ export class JobStore {
     return this.byId(id)!;
   }
 
+  /**
+   * Drop one recipient from a job's remaining work — the one-click "remove me
+   * from this campaign" from a contact's own chat, without pulling the whole
+   * message sequence through the edit-in-Compose path just to trim one name.
+   * Their still-pending ledger rows go; anything already sent to them stays
+   * (it's the record of what they got). Returns false when the job or the
+   * recipient on it wasn't found.
+   */
+  removeRecipient(jobId: string, recipientId: string): boolean {
+    const job = this.byId(jobId);
+    if (!job || !job.recipients.some((r) => r.id === recipientId)) return false;
+    this.db.transaction(() => {
+      this.q.sendDeletePending.run(jobId, recipientId);
+      const recipients = job.recipients.filter((r) => r.id !== recipientId);
+      this.q.updateRecipients.run({ id: jobId, recipients: JSON.stringify(recipients) });
+    })();
+    return true;
+  }
+
   all(filter: InstanceFilter = NO_FILTER): Job[] {
     return (this.q.all.all(filter) as JobRow[]).map(rowToJob);
   }
@@ -503,14 +563,28 @@ export class JobStore {
    */
   page(
     scope: JobScope,
-    opts: { status?: JobStatus; limit: number; offset: number; q?: string; dir?: 'asc' | 'desc' },
+    opts: {
+      /** 'active' is a pseudo-status: a campaign genuinely mid-send (see
+       *  ACTIVE_CAMPAIGN) rather than a literal `jobs.status` value. */
+      status?: JobStatus | 'active';
+      limit: number;
+      offset: number;
+      q?: string;
+      dir?: 'asc' | 'desc';
+    },
     filter: InstanceFilter = NO_FILTER,
   ): JobPage {
     const asc = opts.dir === 'asc';
-    const pageQ = scope === 'history'
-      ? (asc ? this.q.pageHistoryAsc : this.q.pageHistoryDesc)
-      : (asc ? this.q.pageScheduledAsc : this.q.pageScheduledDesc);
+    const active = opts.status === 'active';
+    const pageQ = active
+      ? scope === 'history'
+        ? (asc ? this.q.pageHistoryActiveAsc : this.q.pageHistoryActiveDesc)
+        : (asc ? this.q.pageScheduledActiveAsc : this.q.pageScheduledActiveDesc)
+      : scope === 'history'
+        ? (asc ? this.q.pageHistoryAsc : this.q.pageHistoryDesc)
+        : (asc ? this.q.pageScheduledAsc : this.q.pageScheduledDesc);
     const countQ = scope === 'history' ? this.q.countHistory : this.q.countScheduled;
+    const countActiveQ = scope === 'history' ? this.q.countHistoryActive : this.q.countScheduledActive;
     const q = opts.q?.trim() || null;
     const counts: JobPage['counts'] = {};
     let totalAll = 0;
@@ -518,17 +592,21 @@ export class JobStore {
       counts[r.status] = r.n;
       totalAll += r.n;
     }
+    // Omit when zero, matching how the per-status counts above only carry
+    // keys GROUP BY actually returned rows for — an absent key means none.
+    const activeCount = (countActiveQ.get({ ...filter, q }) as { n: number }).n;
+    if (activeCount > 0) counts.active = activeCount;
     const rows = pageQ.all({
       eff: filter.eff,
       def: filter.def,
-      status: opts.status ?? null,
+      status: active ? null : (opts.status ?? null),
       q,
       limit: opts.limit,
       offset: opts.offset,
     }) as JobRow[];
     return {
       jobs: rows.map(rowToJob),
-      total: opts.status ? (counts[opts.status] ?? 0) : totalAll,
+      total: active ? activeCount : opts.status ? (counts[opts.status] ?? 0) : totalAll,
       counts,
     };
   }

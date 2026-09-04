@@ -6,6 +6,7 @@ import { useConfirm } from '../components/Confirm';
 import { useToast } from '../components/Toast';
 import { agentBadgeClass, agentLabel, useAgents, useMe } from '../lib/agents';
 import { api } from '../lib/api';
+import { isOngoingForChat } from '../lib/campaign';
 import {
   canonJid,
   syncAliases,
@@ -419,13 +420,7 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
     refetchInterval: 30_000,
     select: (jobs) =>
       jobs
-        // immediate "send now" jobs are pending for seconds — not scheduled work
-        .filter(
-          (j) =>
-            j.status === 'pending' &&
-            j.type !== 'immediate' &&
-            j.recipients.some((r) => r.id === jid),
-        )
+        .filter((j) => isOngoingForChat(j) && j.recipients.some((r) => r.id === jid))
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)),
   });
   const scheduledJobs = scheduled.data ?? [];
@@ -1010,6 +1005,14 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
 
   const cancelJob = useMutation({
     mutationFn: (id: string) => api.jobs.cancel(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
+    onError: (e) => setSendError(String((e as Error).message)),
+  });
+
+  // Drop just this chat's number from a multi-recipient campaign — everyone
+  // else it's still going out to is untouched.
+  const removeFromCampaign = useMutation({
+    mutationFn: (jobId: string) => api.jobs.removeRecipient(jobId, jid),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
     onError: (e) => setSendError(String((e as Error).message)),
   });
@@ -1672,24 +1675,41 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                     {jobPreview(job)}
                   </div>
                   <div className="mt-1.5 flex justify-end gap-1.5">
-                    <button
-                      onClick={() => editScheduled(job)}
-                      className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => void sendScheduledNow(job)}
-                      className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
-                    >
-                      Send now
-                    </button>
-                    <button
-                      onClick={() => cancelJob.mutate(job.id)}
-                      className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50"
-                    >
-                      Cancel
-                    </button>
+                    {/* Edit/Send now/Cancel act on the WHOLE job — safe only
+                        when this chat is its one and only recipient. A
+                        multi-recipient campaign gets "Remove me" instead,
+                        which touches just this number. */}
+                    {job.recipients.length === 1 ? (
+                      <>
+                        <button
+                          onClick={() => editScheduled(job)}
+                          className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => void sendScheduledNow(job)}
+                          className="rounded border border-amber-300 px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100"
+                        >
+                          Send now
+                        </button>
+                        <button
+                          onClick={() => cancelJob.mutate(job.id)}
+                          className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => removeFromCampaign.mutate(job.id)}
+                        disabled={removeFromCampaign.isPending}
+                        title="Takes this number off the campaign's remaining sends — everyone else it's still going out to is untouched"
+                        className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        Remove me from this campaign
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2101,13 +2121,13 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
     [remindersQ.data],
   );
   // Shares the ['jobs'] cache with Thread's own scheduled-jobs query — same
-  // filter (pending, non-immediate), just fanned out across every recipient
+  // filter (isOngoingForChat), just fanned out across every recipient
   // instead of one open chat, for the list row's scheduled indicator.
   const jobsQ = useQuery({ queryKey: ['jobs'], queryFn: api.jobs.list, refetchInterval: 30_000 });
   const scheduledByJid = useMemo(() => {
     const map = new Map<string, { count: number; nextAt: string }>();
     for (const j of jobsQ.data ?? []) {
-      if (j.status !== 'pending' || j.type === 'immediate') continue;
+      if (!isOngoingForChat(j)) continue;
       for (const r of j.recipients) {
         const prev = map.get(r.id);
         if (prev) {

@@ -310,6 +310,38 @@ describe('Scheduler', () => {
     expect(evo.calls[1]!.body.text).toBe('edited');
   });
 
+  it('picks up an edit even when pause-edit-resume cycles back to pending before the next send sees it', async () => {
+    // Reproduces a prod bug: operator pauses, edits the message, and resumes
+    // fast enough that by the time the loop checks status again it's already
+    // back to 'pending' — matching neither the cancelled nor paused branch —
+    // so the run must still pick up the edit rather than silently keep
+    // sending from the job snapshot it started with.
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: [r('972521111111'), r('972522222222')],
+      items: [textItem],
+    });
+    const origCall = evo.call.bind(evo);
+    evo.call = async (...args) => {
+      const res = await origCall(...args);
+      jobs.setStatus('j1', 'paused');
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: [r('972521111111'), r('972522222222')],
+        items: [{ type: 'text', data: { text: 'edited' } }],
+      });
+      jobs.resume('j1');
+      evo.call = origCall;
+      return res;
+    };
+    await scheduler.tick();
+
+    expect(evo.calls).toHaveLength(2);
+    expect(evo.calls[1]!.body.text).toBe('edited');
+  });
+
   it('broadcasts a status item once, not once per recipient', async () => {
     jobs.upsert({
       id: 'j1',

@@ -190,12 +190,14 @@ export function registerJobs(
     if (!q.scope) return jobs.all(instanceFilter(q));
     if (!SCOPES.includes(q.scope as JobScope))
       return reply.code(400).send({ error: `scope must be one of: ${SCOPES.join(', ')}` });
-    if (q.status && !ALL_STATUSES.includes(q.status as JobStatus))
-      return reply.code(400).send({ error: `status must be one of: ${ALL_STATUSES.join(', ')}` });
+    if (q.status && q.status !== 'active' && !ALL_STATUSES.includes(q.status as JobStatus))
+      return reply
+        .code(400)
+        .send({ error: `status must be one of: ${ALL_STATUSES.join(', ')}, active` });
     return jobs.page(
       q.scope as JobScope,
       {
-        status: q.status as JobStatus | undefined,
+        status: q.status as JobStatus | 'active' | undefined,
         limit: Math.min(Math.max(1, Number(q.limit) || 50), 200),
         offset: Math.max(0, Number(q.offset) || 0),
         q: q.q,
@@ -426,6 +428,26 @@ export function registerJobs(
     const resumed = jobs.byId(id);
     wake?.();
     return resumed;
+  });
+
+  // Drop one recipient from a job's remaining work — the one-click "remove me
+  // from this campaign" offered on a contact's own chat. Refused while the
+  // job is literally mid-send (the scheduler already has its own ledger
+  // snapshot for the batch in flight); any other status is safe to edit.
+  app.post('/api/jobs/:id/remove-recipient', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const j = jobs.byId(id);
+    if (!j) return reply.code(404).send({ error: 'not found' });
+    if (j.status === 'running')
+      return reply.code(409).send({ error: 'job is sending right now — try again in a moment' });
+    if (!instanceAllowed(req, j.instance))
+      return reply.code(403).send({ error: 'instance not allowed' });
+    const { recipient } = (req.body ?? {}) as { recipient?: unknown };
+    if (typeof recipient !== 'string' || !recipient)
+      return reply.code(400).send({ error: 'recipient required' });
+    if (!jobs.removeRecipient(id, recipient))
+      return reply.code(404).send({ error: 'that recipient is not on this job' });
+    return jobs.byId(id);
   });
 
   // Un-cancel, only while the scheduled time is still in the future. The

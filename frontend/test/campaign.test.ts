@@ -6,6 +6,7 @@ import {
   estimateFinish,
   humanMinutes,
   isCampaign,
+  isOngoingForChat,
   progressLine,
   waitingLabel,
 } from '../src/lib/campaign';
@@ -283,5 +284,27 @@ describe('which jobs get the campaign panel', () => {
     expect(isCampaign({ ...job, batch: { pauseMin: 0, pauseAt: '21:00' } })).toBe(true);
     expect(isCampaign({ ...job, startedAt: new Date().toISOString() })).toBe(true);
     expect(isCampaign({ ...job, recipients: Array.from({ length: 20 }, (_, i) => ({ id: `${i}` })) })).toBe(true);
+  });
+});
+
+describe('which jobs still count as "ongoing" from one contact\'s chat', () => {
+  const oneRecipient = [{ id: '1' }];
+  const twoRecipients = [{ id: '1' }, { id: '2' }];
+
+  it('a plain scheduled job counts while pending or paused, not once finished', () => {
+    expect(isOngoingForChat({ status: 'pending', type: 'compose', recipients: oneRecipient })).toBe(true);
+    expect(isOngoingForChat({ status: 'paused', type: 'compose', recipients: oneRecipient })).toBe(true);
+    expect(isOngoingForChat({ status: 'done', type: 'compose', recipients: oneRecipient })).toBe(false);
+    expect(isOngoingForChat({ status: 'cancelled', type: 'compose', recipients: oneRecipient })).toBe(false);
+  });
+
+  it('a single-recipient "send now" is too quick to be worth surfacing', () => {
+    expect(isOngoingForChat({ status: 'pending', type: 'immediate', recipients: oneRecipient })).toBe(false);
+  });
+
+  it('a multi-recipient "send now" campaign still counts while it paces itself', () => {
+    expect(isOngoingForChat({ status: 'pending', type: 'immediate', recipients: twoRecipients })).toBe(true);
+    expect(isOngoingForChat({ status: 'paused', type: 'immediate', recipients: twoRecipients })).toBe(true);
+    expect(isOngoingForChat({ status: 'done', type: 'immediate', recipients: twoRecipients })).toBe(false);
   });
 });

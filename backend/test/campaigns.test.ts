@@ -75,6 +75,38 @@ describe('campaign control (batching, pause, continue)', () => {
     await scheduler.tick();
   });
 
+  it('the "active" chip count covers a mid-campaign pending job, not a never-started or human-paused one', async () => {
+    // never fired — plain 'pending', no started_at (scheduled ahead so the
+    // tick below doesn't pick it up too)
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    jobs.upsert({ id: 'never-run', scheduledAt: future, recipients: [r('972520000000')], items: [textItem] });
+    // mid-campaign: paced between batches on its own — 'pending' WITH started_at
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: five,
+      items: [textItem],
+      batch: { size: 2, pauseMin: 30 },
+    });
+    await scheduler.tick();
+    expect(jobs.byId('j1')!.status).toBe('pending');
+    expect(jobs.byId('j1')!.startedAt).toBeTruthy();
+    // human-paused: waiting for an operator, not pacing itself
+    jobs.upsert({ id: 'j2', scheduledAt: PAST, recipients: five, items: [textItem] });
+    expect(jobs.claim('j2')).toBe(true);
+    jobs.setStatus('j2', 'paused');
+
+    const page = jobs.page('scheduled', { limit: 50, offset: 0 });
+    expect(page.counts.active).toBe(1);
+    expect(page.counts.pending).toBe(2); // 'never-run' and j1 both literally 'pending'
+    expect(page.counts.paused).toBe(1);
+
+    // filtering by the pseudo-status returns only the genuinely active one
+    const onlyActive = jobs.page('scheduled', { limit: 50, offset: 0, status: 'active' });
+    expect(onlyActive.jobs.map((j) => j.id)).toEqual(['j1']);
+    expect(onlyActive.total).toBe(1);
+  });
+
   it('picks a randomized wait within [pauseMin, pauseMinMax] at a batch boundary', async () => {
     jobs.upsert({
       id: 'j1',
@@ -561,6 +593,44 @@ describe('campaign control (batching, pause, continue)', () => {
     expect(evo.sentTo()).toContain('972526666666');
   });
 
+  it('removeRecipient drops one number\'s unsent work without touching what already went out', async () => {
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: five,
+      items: [textItem],
+      batch: { size: 2, pauseMin: 0 },
+    });
+    await scheduler.tick();
+    const sentFirst = evo.sentTo();
+    expect(jobs.byId('j1')!.status).toBe('paused');
+
+    // drop someone who already got a message, and someone who's still pending
+    expect(jobs.removeRecipient('j1', sentFirst[0]!)).toBe(true);
+    expect(jobs.removeRecipient('j1', '972525555555')).toBe(true);
+    // unknown recipient / unknown job — no-op, reported as such
+    expect(jobs.removeRecipient('j1', '972529999999')).toBe(false);
+    expect(jobs.removeRecipient('nope', sentFirst[0]!)).toBe(false);
+
+    const job = jobs.byId('j1')!;
+    expect(job.recipients.some((r) => r.id === '972525555555')).toBe(false);
+    // removed even though they'd already been sent to — recipients is the
+    // display/audience list, not the sent-history record
+    expect(job.recipients.some((r) => r.id === sentFirst[0])).toBe(false);
+    // their SENT row survives untouched either way
+    const after = jobs.allSends('j1');
+    expect(after.find((s) => s.recipient === sentFirst[0])!.status).toBe('sent');
+    expect(after.some((s) => s.recipient === '972525555555')).toBe(false);
+
+    // continuing only reaches whoever is left
+    for (let i = 0; i < 5 && jobs.byId('j1')!.status === 'paused'; i++) {
+      jobs.resume('j1');
+      await scheduler.tick();
+    }
+    expect(jobs.byId('j1')!.status).toBe('done');
+    expect(evo.sentTo()).not.toContain('972525555555');
+  });
+
   it('a failed/missed campaign with untried rows can still be edited-in-place and resumed', () => {
     // Simulate: the campaign started, one recipient went out, then something
     // finalized it 'failed' (e.g. a dead session) — three recipients were
@@ -701,6 +771,27 @@ describe('campaign control API', () => {
 
     for (const url of ['/api/jobs/nope/pause', '/api/jobs/nope/resume', '/api/jobs/nope/progress'])
       expect((await t.app.inject({ method: url.endsWith('progress') ? 'GET' : 'POST', url })).statusCode).toBe(404);
+  });
+
+  it('remove-recipient drops one number and rejects a bad request the right way', async () => {
+    const job = (await post('/api/jobs', base)).json();
+
+    const removed = await post(`/api/jobs/${job.id}/remove-recipient`, { recipient: '972521111111' });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().recipients.map((r: { id: string }) => r.id)).toEqual(['972522222222']);
+
+    // that recipient again — no longer on the job
+    expect((await post(`/api/jobs/${job.id}/remove-recipient`, { recipient: '972521111111' })).statusCode).toBe(404);
+    // missing/blank body
+    expect((await post(`/api/jobs/${job.id}/remove-recipient`, {})).statusCode).toBe(400);
+    // unknown job
+    expect((await post('/api/jobs/nope/remove-recipient', { recipient: '972521111111' })).statusCode).toBe(404);
+
+    // refused while literally mid-send
+    t.db.prepare(`UPDATE jobs SET status='running' WHERE id=?`).run(job.id);
+    expect(
+      (await post(`/api/jobs/${job.id}/remove-recipient`, { recipient: '972522222222' })).statusCode,
+    ).toBe(409);
   });
 
   it('continues a campaign that was stopped after it had started', async () => {

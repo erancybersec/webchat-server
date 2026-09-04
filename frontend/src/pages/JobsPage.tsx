@@ -985,7 +985,7 @@ export default function JobsPage({
   const qc = useQueryClient();
   const toast = useToast();
   const confirmDlg = useConfirm();
-  const [filter, setFilter] = useState<JobStatus | 'all'>('all');
+  const [filter, setFilter] = useState<JobStatus | 'active' | 'all'>('all');
   const status = filter === 'all' ? undefined : filter;
   const names = useRecipientNames();
   const progress = useJobProgress();
@@ -1056,7 +1056,9 @@ export default function JobsPage({
   const jobs = pages.data?.pages.flatMap((p) => p.jobs) ?? [];
   const counts = pages.data?.pages[0]?.counts ?? {};
   const total = pages.data?.pages[0]?.total ?? 0;
-  const totalAll = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0);
+  // 'active' overlays the per-status counts (its jobs are also counted under
+  // 'running'/'pending' above) — excluded here so it isn't double-counted.
+  const totalAll = ALL_STATUSES.reduce((a, s) => a + (counts[s] ?? 0), 0);
   const copy = COPY[scope];
   // Bulk-clearing wipes finished jobs + ledger irreversibly — admins only by
   // default. Hide the button (the server enforces with 403 regardless) until a
@@ -1355,6 +1357,22 @@ export default function JobsPage({
         >
           All ({totalAll})
         </button>
+        {/* Overlays the status chips below: a campaign genuinely mid-send —
+            literally 'running', or 'pending' pacing itself between batches —
+            as opposed to a 'pending' job that has simply never fired yet. */}
+        {!!counts.active && (
+          <button
+            onClick={() => setFilter(filter === 'active' ? 'all' : 'active')}
+            title="Actively sending, or pacing itself between batches — no operator action needed"
+            className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+              filter === 'active'
+                ? 'ring-2 ring-wa bg-amber-100 text-amber-700'
+                : 'bg-amber-100 text-amber-700 opacity-80 hover:opacity-100'
+            }`}
+          >
+            🟢 Running ({counts.active})
+          </button>
+        )}
         {ALL_STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => (
           <button
             key={s}

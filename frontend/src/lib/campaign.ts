@@ -8,6 +8,20 @@ export function isCampaign(job: Pick<Job, 'recipients' | 'batch' | 'startedAt'>)
   return !!job.batch || !!job.startedAt || job.recipients.length >= CAMPAIGN_AT;
 }
 
+/**
+ * Whether a job is still "in play" from one recipient's chat — worth a ghost
+ * bubble / scheduled-indicator, and a candidate for "remove me from this
+ * campaign". Includes 'paused' (a human-held campaign is very much ongoing)
+ * and an 'immediate' send only when it has more than one recipient — a
+ * single-recipient "send now" finishes in seconds and was never "scheduled
+ * work"; a multi-recipient one can stay pending/paused for hours (batch
+ * pacing, a sending window) and is exactly the case worth surfacing here.
+ */
+export function isOngoingForChat(job: Pick<Job, 'status' | 'type' | 'recipients'>): boolean {
+  if (job.status !== 'pending' && job.status !== 'paused') return false;
+  return job.type !== 'immediate' || job.recipients.length > 1;
+}
+
 /** "3h 20m" / "12m" / "under a minute" — a duration as an operator reads it. */
 export function humanMinutes(min: number): string {
   if (!Number.isFinite(min) || min < 1) return 'under a minute';

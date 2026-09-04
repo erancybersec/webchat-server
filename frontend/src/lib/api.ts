@@ -311,7 +311,13 @@ export const api = {
     list: () => iget<Job[]>('/api/jobs'),
     page: (
       scope: JobScope,
-      opts: { status?: JobStatus; limit?: number; offset?: number; q?: string; sort?: 'asc' | 'desc' } = {},
+      opts: {
+        status?: JobStatus | 'active';
+        limit?: number;
+        offset?: number;
+        q?: string;
+        sort?: 'asc' | 'desc';
+      } = {},
     ) => {
       const q = new URLSearchParams({ scope, limit: String(opts.limit ?? 50), offset: String(opts.offset ?? 0) });
       if (opts.status) q.set('status', opts.status);
@@ -354,6 +360,10 @@ export const api = {
     retryFailed: (id: string) =>
       post<{ retried: number; job: Job }>(`/api/jobs/${encodeURIComponent(id)}/retry-failed`),
     resume: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/resume`),
+    // Drop one number from a job's remaining work — "remove me from this
+    // campaign" from that contact's own chat. Sent rows are untouched.
+    removeRecipient: (id: string, recipient: string) =>
+      post<Job>(`/api/jobs/${encodeURIComponent(id)}/remove-recipient`, { recipient }),
     cancel: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/cancel`),
     restore: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/restore`),
     rerun: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/rerun`),

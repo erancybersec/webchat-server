@@ -98,7 +98,9 @@ export type JobScope = 'scheduled' | 'history';
 export interface JobPage {
   jobs: Job[];
   total: number;
-  counts: Partial<Record<JobStatus, number>>;
+  /** `active` overlays the per-status counts — a campaign genuinely mid-send
+   *  (see ACTIVE_CAMPAIGN in services/jobs.ts), not a disjoint status bucket. */
+  counts: Partial<Record<JobStatus, number>> & { active?: number };
 }
 
 export type SendStatus = 'pending' | 'sent' | 'skipped' | 'failed';

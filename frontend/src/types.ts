@@ -191,7 +191,10 @@ export type JobScope = 'scheduled' | 'history';
 export interface JobPage {
   jobs: Job[];
   total: number;
-  counts: Partial<Record<JobStatus, number>>;
+  /** `active` overlays the per-status counts — a campaign genuinely mid-send,
+   *  not a disjoint status bucket (its jobs are also counted under
+   *  'running'/'pending' above). */
+  counts: Partial<Record<JobStatus, number>> & { active?: number };
 }
 
 /** One day's job count — feeds the History volume strip. */
