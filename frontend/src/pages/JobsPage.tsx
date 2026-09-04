@@ -1373,7 +1373,10 @@ export default function JobsPage({
             🟢 Running ({counts.active})
           </button>
         )}
-        {ALL_STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => (
+        {/* literal 'running' is folded into the "Running" chip above — a
+            separate chip with the same count for the split-second the DB
+            row spends at that exact status reads as a confusing duplicate */}
+        {ALL_STATUSES.filter((s) => s !== 'running' && (counts[s] ?? 0) > 0).map((s) => (
           <button
             key={s}
             onClick={() => setFilter(filter === s ? 'all' : s)}

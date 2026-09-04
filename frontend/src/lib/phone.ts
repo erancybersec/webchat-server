@@ -21,3 +21,15 @@ export function normalizeRecipientId(raw: string): string | null {
   if (s.includes('@')) return s; // JID — pass through
   return normalizePhone(s);
 }
+
+/**
+ * A key for matching a job's `recipients[].id` (often bare digits — a
+ * mass-imported list never touched a contact picker) against an open chat's
+ * jid (always `<digits>@s.whatsapp.net`/`@g.us`). `normalizePhone` strips
+ * everything non-digit, so it already collapses either shape to the same
+ * phone — falls back to the raw value for a group/lid id that isn't phone-
+ * shaped, so those still match by plain equality.
+ */
+export function phoneKey(id: string): string {
+  return normalizePhone(id) ?? id;
+}

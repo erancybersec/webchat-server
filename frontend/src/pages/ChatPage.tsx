@@ -41,7 +41,7 @@ import {
   type ThreadFetchResult,
 } from '../lib/chatModel';
 import { applyLocalDeletes, buildOptimistic, matchReconciled, mergePending, reconcilePending, type LocalDelete, type PendingSend } from '../lib/optimistic';
-import { normalizePhone } from '../lib/phone';
+import { normalizePhone, phoneKey } from '../lib/phone';
 import { fillAgentName, useQuickReplies } from '../lib/quickReplies';
 import QuickRepliesModal from './chat/QuickRepliesModal';
 import { useEvents } from '../lib/useEvents';
@@ -414,13 +414,16 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
   const iSentRef = useRef<Set<string>>(new Set());
 
   // Pending scheduled jobs addressed to THIS chat — rendered as ghost bubbles.
+  // Matched by phone digits, not raw equality: a mass-imported campaign's
+  // recipients are bare phone strings (never touched a contact picker),
+  // while `jid` here is always the full `<digits>@s.whatsapp.net` form.
   const scheduled = useQuery({
     queryKey: ['jobs'],
     queryFn: api.jobs.list,
     refetchInterval: 30_000,
     select: (jobs) =>
       jobs
-        .filter((j) => isOngoingForChat(j) && j.recipients.some((r) => r.id === jid))
+        .filter((j) => isOngoingForChat(j) && j.recipients.some((r) => phoneKey(r.id) === phoneKey(jid)))
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)),
   });
   const scheduledJobs = scheduled.data ?? [];
@@ -1010,9 +1013,15 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
   });
 
   // Drop just this chat's number from a multi-recipient campaign — everyone
-  // else it's still going out to is untouched.
+  // else it's still going out to is untouched. The backend matches the
+  // recipient id exactly, so this sends the job's OWN stored id (bare
+  // digits, typically) rather than `jid` (always the full `...@s.whatsapp.net`
+  // form) — they're the same phone but rarely the same string.
   const removeFromCampaign = useMutation({
-    mutationFn: (jobId: string) => api.jobs.removeRecipient(jobId, jid),
+    mutationFn: (job: Job) => {
+      const recipientId = job.recipients.find((r) => phoneKey(r.id) === phoneKey(jid))?.id ?? jid;
+      return api.jobs.removeRecipient(job.id, recipientId);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
     onError: (e) => setSendError(String((e as Error).message)),
   });
@@ -1702,7 +1711,7 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                       </>
                     ) : (
                       <button
-                        onClick={() => removeFromCampaign.mutate(job.id)}
+                        onClick={() => removeFromCampaign.mutate(job)}
                         disabled={removeFromCampaign.isPending}
                         title="Takes this number off the campaign's remaining sends — everyone else it's still going out to is untouched"
                         className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
@@ -2124,17 +2133,21 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
   // filter (isOngoingForChat), just fanned out across every recipient
   // instead of one open chat, for the list row's scheduled indicator.
   const jobsQ = useQuery({ queryKey: ['jobs'], queryFn: api.jobs.list, refetchInterval: 30_000 });
+  // Keyed by phoneKey (bare digits), not the raw id — same mismatch as
+  // Thread's own query: a mass-imported campaign's recipients are bare
+  // phone strings, while a chat row's id is the full jid.
   const scheduledByJid = useMemo(() => {
     const map = new Map<string, { count: number; nextAt: string }>();
     for (const j of jobsQ.data ?? []) {
       if (!isOngoingForChat(j)) continue;
       for (const r of j.recipients) {
-        const prev = map.get(r.id);
+        const key = phoneKey(r.id);
+        const prev = map.get(key);
         if (prev) {
           prev.count += 1;
           if (j.scheduledAt < prev.nextAt) prev.nextAt = j.scheduledAt;
         } else {
-          map.set(r.id, { count: 1, nextAt: j.scheduledAt });
+          map.set(key, { count: 1, nextAt: j.scheduledAt });
         }
       }
     }
@@ -2308,7 +2321,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
       if (archived.has(c.id)) return false;
       if (tab === 'unread' && !c.unreadCount) return false;
       if (tab === 'groups' && !c.isGroup) return false;
-      if (tab === 'scheduled' && !scheduledByJid.has(c.id)) return false;
+      if (tab === 'scheduled' && !scheduledByJid.has(phoneKey(c.id))) return false;
       if (WORKBENCH_FILTERS.includes(tab)) {
         const m = rowMeta(c);
         if (tab === 'mine' && (!me.data?.email || m.assignee !== me.data.email)) return false;
@@ -2406,7 +2419,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
           {list.map((c) => {
             const wm = rowMeta(c);
             const assignedAgent = wm.assignee ? agentsByEmail.get(wm.assignee) : undefined;
-            const sched = scheduledByJid.get(c.id);
+            const sched = scheduledByJid.get(phoneKey(c.id));
             return (
             // content-visibility lets the browser skip layout/paint for the
             // ~1000 off-screen rows of a real account's chat list
