@@ -194,9 +194,15 @@ function scheduleLabel(iso: string): string {
   return `${d.toLocaleDateString([], { day: '2-digit', month: '2-digit' })} ${time}`;
 }
 
-/** One-line preview of a scheduled job's first item, for the in-thread bubble. */
-function jobPreview(job: Job): string {
-  const item = job.items[0];
+/**
+ * One-line preview of a scheduled job's next item, for the in-thread bubble.
+ * `itemIndex` is which item THIS recipient is actually still owed — in a
+ * multi-item sequence they may have already received item 0, so previewing
+ * item 0 unconditionally would re-show already-sent content as if it were
+ * still queued.
+ */
+function jobPreview(job: Job, itemIndex = 0): string {
+  const item = job.items[itemIndex] ?? job.items[0];
   if (!item) return '(empty)';
   const text = (item.data?.text ?? item.data?.caption) as string | undefined;
   if (text) return text;
@@ -1690,7 +1696,7 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                     {scheduleLabel(job.scheduledAt)}
                   </div>
                   <div className="whitespace-pre-wrap break-words text-sm text-gray-800" dir="auto">
-                    {jobPreview(job)}
+                    {jobPreview(job, pendingByJob.get(job.id)?.get(phoneKey(jid)))}
                   </div>
                   <div className="mt-1.5 flex justify-end gap-1.5">
                     {/* Edit/Send now/Cancel act on the WHOLE job — safe only

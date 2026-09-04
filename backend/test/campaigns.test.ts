@@ -631,6 +631,29 @@ describe('campaign control (batching, pause, continue)', () => {
     expect(evo.sentTo()).not.toContain('972525555555');
   });
 
+  it('recipientsByStatus reports which item a recipient is still owed, not just that they are pending', () => {
+    // Two-item sequence (text, then voice): once a recipient's item 0 is sent,
+    // item 1 is what's actually still queued for them — a chat-side preview
+    // that ignored this would re-show the already-sent text as if it were
+    // still coming, instead of the voice note that's really next.
+    const two = ['972521111111', '972522222222'].map(r);
+    const job = jobs.upsert({
+      id: 'j1',
+      scheduledAt: PAST,
+      recipients: two,
+      items: [textItem, { type: 'voice', data: { encoding: true, base64: 'x' } }],
+    });
+    jobs.ensureLedger(job);
+    const firstItemFirstRecipient = jobs
+      .pendingSends('j1')
+      .find((s) => s.recipient === two[0]!.id && s.itemIndex === 0)!;
+    jobs.markSendDone(firstItemFirstRecipient, 'sent');
+
+    const pending = jobs.recipientsByStatus('j1', ['pending']);
+    expect(pending.find((s) => s.recipient === two[0]!.id)?.itemIndex).toBe(1);
+    expect(pending.find((s) => s.recipient === two[1]!.id)?.itemIndex).toBe(0);
+  });
+
   it('a failed/missed campaign with untried rows can still be edited-in-place and resumed', () => {
     // Simulate: the campaign started, one recipient went out, then something
     // finalized it 'failed' (e.g. a dead session) — three recipients were

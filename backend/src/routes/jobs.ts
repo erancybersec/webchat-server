@@ -600,7 +600,7 @@ export function registerJobs(
     const named = new Map(job.recipients.map((r) => [r.id, r.name]));
     const recipients = jobs
       .recipientsByStatus(id, [status as SendStatus])
-      .map((r) => ({ id: r.recipient, isGroup: r.isGroup, name: named.get(r.recipient) }));
+      .map((r) => ({ id: r.recipient, isGroup: r.isGroup, name: named.get(r.recipient), itemIndex: r.itemIndex }));
     return { recipients };
   });
 

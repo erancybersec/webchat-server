@@ -801,14 +801,17 @@ export class JobStore {
    * per message) and never including the status/story broadcast row, which
    * is not a person.
    */
-  recipientsByStatus(jobId: string, statuses: SendStatus[]): Array<{ recipient: string; isGroup: boolean }> {
+  recipientsByStatus(
+    jobId: string,
+    statuses: SendStatus[],
+  ): Array<{ recipient: string; isGroup: boolean; itemIndex: number }> {
     const seen = new Set<string>();
-    const out: Array<{ recipient: string; isGroup: boolean }> = [];
+    const out: Array<{ recipient: string; isGroup: boolean; itemIndex: number }> = [];
     for (const s of this.allSends(jobId)) {
       if (!statuses.includes(s.status)) continue;
       if (s.recipient === 'status@broadcast' || seen.has(s.recipient)) continue;
       seen.add(s.recipient);
-      out.push({ recipient: s.recipient, isGroup: s.isGroup });
+      out.push({ recipient: s.recipient, isGroup: s.isGroup, itemIndex: s.itemIndex });
     }
     return out;
   }

@@ -12,9 +12,12 @@ import type { Job, JobProgress } from '../types';
  * "this particular recipient is still owed a message". Single-recipient jobs
  * are skipped: being job-level ongoing already implies not yet sent (the job
  * would be 'done' otherwise), so this only spends a request on jobs that
- * actually need the ledger to answer the question.
+ * actually need the ledger to answer the question. The value maps each still-
+ * pending recipient to the item index they're next owed — a multi-item
+ * sequence (e.g. text then voice note) can have already sent this recipient
+ * item 0 while item 1 is what's actually still queued for them.
  */
-export function usePendingRecipientKeys(jobs: Job[]): Map<string, Set<string>> {
+export function usePendingRecipientKeys(jobs: Job[]): Map<string, Map<string, number>> {
   const qc = useQueryClient();
   const multi = jobs.filter((j) => j.recipients.length > 1);
   const results = useQueries({
@@ -33,10 +36,10 @@ export function usePendingRecipientKeys(jobs: Job[]): Map<string, Set<string>> {
     const p = data as JobProgress | null;
     if (p?.jobId) void qc.invalidateQueries({ queryKey: ['job-pending-recipients', p.jobId] });
   });
-  const map = new Map<string, Set<string>>();
+  const map = new Map<string, Map<string, number>>();
   multi.forEach((j, i) => {
     const recipients = results[i]?.data?.recipients ?? [];
-    map.set(j.id, new Set(recipients.map((r) => phoneKey(r.id))));
+    map.set(j.id, new Map(recipients.map((r) => [phoneKey(r.id), r.itemIndex ?? 0])));
   });
   return map;
 }

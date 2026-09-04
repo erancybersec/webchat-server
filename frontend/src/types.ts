@@ -20,6 +20,8 @@ export interface Recipient {
   isGroup?: boolean;
   /** Display name — feeds {{name}} personalization at send time. */
   name?: string;
+  /** Set only by recipientsByStatus: the next item index still at that status. */
+  itemIndex?: number;
 }
 
 export type RepeatFreq = 'daily' | 'weekly' | 'monthly';
