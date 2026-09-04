@@ -45,6 +45,7 @@ import { normalizePhone, phoneKey } from '../lib/phone';
 import { fillAgentName, useQuickReplies } from '../lib/quickReplies';
 import QuickRepliesModal from './chat/QuickRepliesModal';
 import { useEvents } from '../lib/useEvents';
+import { usePendingRecipientKeys } from '../lib/usePendingRecipients';
 import { fileToBase64, VoiceRecorder } from '../lib/voice';
 import type { Job } from '../types';
 import AttachPreview from './chat/AttachPreview';
@@ -426,7 +427,14 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
         .filter((j) => isOngoingForChat(j) && j.recipients.some((r) => phoneKey(r.id) === phoneKey(jid)))
         .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt)),
   });
-  const scheduledJobs = scheduled.data ?? [];
+  const candidateJobs = scheduled.data ?? [];
+  // A multi-recipient campaign can be mid-run with THIS recipient already
+  // sent to while the job stays pending/paused for the others — confirm
+  // against the ledger before showing it as still outstanding here.
+  const pendingByJob = usePendingRecipientKeys(candidateJobs);
+  const scheduledJobs = candidateJobs.filter(
+    (j) => j.recipients.length === 1 || pendingByJob.get(j.id)?.has(phoneKey(jid)),
+  );
 
   const [draft, setDraft] = useState('');
   // highlighted row in the "/" quick-reply picker (keyboard navigation)
@@ -1716,7 +1724,7 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                         title="Takes this number off the campaign's remaining sends — everyone else it's still going out to is untouched"
                         className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
                       >
-                        Remove me from this campaign
+                        Remove number from this campaign
                       </button>
                     )}
                   </div>
@@ -2133,15 +2141,21 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
   // filter (isOngoingForChat), just fanned out across every recipient
   // instead of one open chat, for the list row's scheduled indicator.
   const jobsQ = useQuery({ queryKey: ['jobs'], queryFn: api.jobs.list, refetchInterval: 30_000 });
+  const ongoingJobs = useMemo(() => (jobsQ.data ?? []).filter(isOngoingForChat), [jobsQ.data]);
+  // A multi-recipient campaign can be mid-run with SOME of its recipients
+  // already sent to while the job stays pending/paused for the rest —
+  // job-level "ongoing" alone would keep flagging those rows too.
+  const pendingByJob = usePendingRecipientKeys(ongoingJobs);
   // Keyed by phoneKey (bare digits), not the raw id — same mismatch as
   // Thread's own query: a mass-imported campaign's recipients are bare
   // phone strings, while a chat row's id is the full jid.
   const scheduledByJid = useMemo(() => {
     const map = new Map<string, { count: number; nextAt: string }>();
-    for (const j of jobsQ.data ?? []) {
-      if (!isOngoingForChat(j)) continue;
+    for (const j of ongoingJobs) {
+      const pendingSet = j.recipients.length > 1 ? pendingByJob.get(j.id) : null;
       for (const r of j.recipients) {
         const key = phoneKey(r.id);
+        if (pendingSet && !pendingSet.has(key)) continue; // this one already got it
         const prev = map.get(key);
         if (prev) {
           prev.count += 1;
@@ -2152,7 +2166,7 @@ export default function ChatPage({ onThreadOpenChange, openChat, onChatOpened }:
       }
     }
     return map;
-  }, [jobsQ.data]);
+  }, [ongoingJobs, pendingByJob]);
   const [activeJid, setActiveJid] = useState<string | null>(null);
   useEffect(() => {
     onThreadOpenChange?.(!!activeJid);
