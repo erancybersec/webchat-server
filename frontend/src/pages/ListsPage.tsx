@@ -71,6 +71,22 @@ export default function ListsPage() {
     qc.invalidateQueries({ queryKey: ['list-members'] });
   };
 
+  const [duplicating, setDuplicating] = useState<string | null>(null);
+
+  async function onDuplicate(l: RecipientList) {
+    setDuplicating(l.id);
+    try {
+      const full = await api.lists.get(l.id);
+      await api.lists.create(`${l.name} (copy)`, full.members, l.recipe ?? null, l.lineScope);
+      invalidate();
+      flash(`“${l.name} (copy)” created`);
+    } catch (e) {
+      flash(`Duplicate failed — ${(e as Error).message}`, 'err');
+    } finally {
+      setDuplicating(null);
+    }
+  }
+
   const removeList = useMutation({
     mutationFn: (id: string) => api.lists.remove(id),
     onSuccess: (_res, id) => {
@@ -221,6 +237,14 @@ export default function ListsPage() {
                   {rebuilding === l.id ? 'Rebuilding…' : 'Rebuild'}
                 </button>
               )}
+              <button
+                onClick={() => void onDuplicate(l)}
+                disabled={duplicating === l.id}
+                title="Create a copy of this list with the same members"
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-wa hover:bg-green-50 hover:text-wa-dark disabled:opacity-50"
+              >
+                {duplicating === l.id ? 'Duplicating…' : 'Duplicate'}
+              </button>
               <button
                 onClick={() => void onDelete(l)}
                 className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
