@@ -239,6 +239,20 @@ export interface RecipientClassification {
   groups: number;
 }
 
+/** Which candidate recipient ids this line already sent to within N days. */
+export interface RecentContactCheck {
+  instance: string;
+  days: number;
+  recent: string[];
+}
+
+/** Everyone this line actually sent to within N days, as ready-to-save list members. */
+export interface RecentContactRoster {
+  instance: string;
+  days: number;
+  members: ListMember[];
+}
+
 export type SettingsPatch = Partial<
   Omit<
     ServerSettings,
@@ -279,6 +293,13 @@ export const api = {
     ipost<RecipientClassification>('/api/sending-limits/classify', {
       recipients: recipients.map((r) => r.id),
     }),
+  recentContact: (recipients: Recipient[], days: number) =>
+    ipost<RecentContactCheck>('/api/sending-limits/recency', {
+      recipients: recipients.map((r) => r.id),
+      days,
+    }),
+  recentContactRoster: (days: number) =>
+    ipost<RecentContactRoster>('/api/sending-limits/recent-roster', { days }),
 
   settings: {
     get: () => get<ServerSettings>('/api/settings'),

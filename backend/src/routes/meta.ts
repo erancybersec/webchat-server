@@ -32,6 +32,17 @@ export interface SendingLimits {
       instance: string,
     ): { known: string[]; cold: string[]; groups: string[] };
   };
+  recentContact?: {
+    recentlyContacted(
+      recipients: readonly unknown[],
+      days: number,
+      filter: { eff: string; def: string },
+    ): string[];
+    recentRoster(
+      days: number,
+      filter: { eff: string; def: string },
+    ): Array<{ recipient: string; isGroup: boolean; name: string }>;
+  };
 }
 
 export function registerMeta(app: FastifyInstance, cfg: Config, limits?: SendingLimits): void {
@@ -89,5 +100,41 @@ export function registerMeta(app: FastifyInstance, cfg: Config, limits?: Sending
       const instance = (typeof q === 'string' && q.trim()) || body.instance || cfg.evo.instance;
       const { known, cold, groups } = limits.familiarity.split(body.recipients, instance);
       return { instance, known: known.length, cold: cold.length, groups: groups.length };
+    });
+
+  // Compose's opt-in "skip anyone I contacted in the last N days" filter:
+  // given a candidate list + a day count, which of them did THIS line already
+  // send something to inside that window (outbound only, any campaign or chat
+  // reply) — so the reduced count is known before Send, not discovered later.
+  if (limits?.recentContact)
+    app.post('/api/sending-limits/recency', async (req, reply) => {
+      const body = req.body as { recipients?: unknown; days?: unknown; instance?: string } | undefined;
+      if (!Array.isArray(body?.recipients))
+        return reply.code(400).send({ error: 'recipients required: string[]' });
+      const days = Math.round(Number(body.days));
+      if (!Number.isFinite(days) || days < 1)
+        return reply.code(400).send({ error: 'days required: number >= 1' });
+      const q = (req.query as { instance?: string } | undefined)?.instance;
+      const eff = (typeof q === 'string' && q.trim()) || body.instance || cfg.evo.instance;
+      const recent = limits.recentContact!.recentlyContacted(body.recipients, days, {
+        eff,
+        def: cfg.evo.instance,
+      });
+      return { instance: eff, days, recent };
+    });
+
+  // Lists' "add from recent contacts" source: everyone this line actually
+  // sent something to within the last N days, ready to drop straight into a
+  // list's member editor.
+  if (limits?.recentContact)
+    app.post('/api/sending-limits/recent-roster', async (req, reply) => {
+      const body = req.body as { days?: unknown; instance?: string } | undefined;
+      const days = Math.round(Number(body?.days));
+      if (!Number.isFinite(days) || days < 1)
+        return reply.code(400).send({ error: 'days required: number >= 1' });
+      const q = (req.query as { instance?: string } | undefined)?.instance;
+      const eff = (typeof q === 'string' && q.trim()) || body?.instance || cfg.evo.instance;
+      const members = limits.recentContact!.recentRoster(days, { eff, def: cfg.evo.instance });
+      return { instance: eff, days, members };
     });
 }

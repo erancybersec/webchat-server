@@ -343,6 +343,8 @@ function ListEditor({
   // Off = freeze: save the members this recipe produced as a plain list.
   const [keepRecipe, setKeepRecipe] = useState(true);
   const [pick, setPick] = useState('');
+  const [recentDays, setRecentDays] = useState('7');
+  const [addingRecent, setAddingRecent] = useState(false);
   // Shown by default — paste mode always shows its members below the textarea,
   // so combine mode shouldn't hide its result behind an extra click either.
   const [showPreview, setShowPreview] = useState(true);
@@ -418,6 +420,26 @@ function ListEditor({
 
   function dropSource(op: 'include' | 'exclude', id: string) {
     setRecipe((r) => ({ ...r, [op]: r[op].filter((s) => s.id !== id) }));
+  }
+
+  async function addFromRecent() {
+    const days = Math.max(1, Math.round(Number(recentDays) || 1));
+    setAddingRecent(true);
+    try {
+      const res = await api.recentContactRoster(days);
+      const seen = new Set(members.map((m) => m.recipient));
+      const fresh = res.members.filter((m) => !seen.has(m.recipient));
+      setMembers((prev) => [...prev, ...fresh]);
+      flash(
+        fresh.length
+          ? `${fresh.length} contact${fresh.length === 1 ? '' : 's'} added`
+          : `No new contacts — everyone contacted in the last ${days} day${days === 1 ? '' : 's'} is already in the list`,
+      );
+    } catch (e) {
+      flash(`Couldn't load recent contacts — ${(e as Error).message}`, 'err');
+    } finally {
+      setAddingRecent(false);
+    }
   }
 
   function addPasted() {
@@ -602,6 +624,24 @@ function ListEditor({
                     className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-wa hover:bg-green-50 hover:text-wa-dark"
                   >
                     ⊞ Table
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-2 text-xs text-gray-600">
+                  <span>Or add everyone contacted in the last</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={recentDays}
+                    onChange={(e) => setRecentDays(e.target.value)}
+                    className="w-16 rounded-lg border border-gray-300 px-2 py-1 text-sm"
+                  />
+                  <span>days (this line's send history)</span>
+                  <button
+                    onClick={() => void addFromRecent()}
+                    disabled={addingRecent}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-600 hover:border-wa hover:bg-green-50 hover:text-wa-dark disabled:opacity-50"
+                  >
+                    {addingRecent ? 'Adding…' : '+ Add'}
                   </button>
                 </div>
               </div>

@@ -326,7 +326,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   // identity the provision hook above just recorded.
   const guard = (key: PermissionKey) => requirePerm(key, { cfg, agents });
 
-  registerMeta(app, cfg, { quota: coldQuota, familiarity: familiarityStore });
+  registerMeta(app, cfg, { quota: coldQuota, familiarity: familiarityStore, recentContact: jobs });
   // wake: immediate sends / reruns fire on save instead of waiting for the poll
   registerJobs(
     app,

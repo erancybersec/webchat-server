@@ -746,4 +746,14 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_ai_agent_audit_log_chat ON ai_agent_audit_log(chat_jid, created_at);
     `,
   },
+  {
+    id: '025-recent-contact-index',
+    sql: `
+      -- Compose's "skip anyone I contacted in the last N days" filter looks up
+      -- the last SENT send_at per recipient, across all jobs, on every keystroke
+      -- in the recipient box — without this, that's a full table scan of
+      -- job_sends per candidate number.
+      CREATE INDEX idx_job_sends_recipient_sent ON job_sends(recipient, status, sent_at);
+    `,
+  },
 ];

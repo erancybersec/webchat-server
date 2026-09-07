@@ -77,6 +77,10 @@ export default function ComposePage() {
   const [delayOverrideOn, setDelayOverrideOn] = useState(!!draft?.batch?.delay);
   const [delayMinOverride, setDelayMinOverride] = useState(String(draft?.batch?.delay?.minSec ?? 1));
   const [delayMaxOverride, setDelayMaxOverride] = useState(String(draft?.batch?.delay?.maxSec ?? 3));
+  // Compose-time filter: drop anyone this line already sent something to
+  // inside the window, before Send/Schedule ever sees them.
+  const [recentFilterOn, setRecentFilterOn] = useState(false);
+  const [recentDays, setRecentDays] = useState('7');
   const [feedback, setFeedback] = useState('');
   // set alongside `feedback` when the message is about a specific paused
   // campaign, so the line can offer a straight jump to its live progress
@@ -86,10 +90,31 @@ export default function ComposePage() {
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings.get, staleTime: 60_000 });
   const recurringEnabled = !!settings.data?.recurringEnabled;
 
-  const itemErrors = items.map(validateItem);
-  const ready = recipients.length > 0 && items.length > 0 && itemErrors.every((e) => !e);
+  // A paused campaign is edited in place: its send ledger already records who
+  // received the message, so the edit only reaches the rest — and the sequence
+  // has to keep its shape (the server refuses an added or removed item).
+  const partlySent = !!draft?.partlySent;
 
-  const { needed: willNeedApproval } = useNeedsApproval(recipients.length);
+  // Never checked while editing a partly-sent campaign: that job's OWN
+  // in-flight sends would poison the very history this is checking against.
+  const recentDaysNum = Math.max(1, Math.round(Number(recentDays) || 1));
+  const recentCheck = useQuery({
+    queryKey: ['recent-contact', recipients.map((r) => r.id).join(','), recentDaysNum],
+    queryFn: () => api.recentContact(recipients, recentDaysNum),
+    enabled: recentFilterOn && !partlySent && recipients.length > 0,
+    staleTime: 15_000,
+  });
+  const recentSet = new Set(recentFilterOn && !partlySent ? (recentCheck.data?.recent ?? []) : []);
+  // what Send/Schedule actually acts on — chips above stay untouched so the
+  // pasted list is never silently rewritten, only the outgoing send is smaller
+  const effectiveRecipients = recentSet.size
+    ? recipients.filter((r) => r.isGroup || !recentSet.has(r.id))
+    : recipients;
+
+  const itemErrors = items.map(validateItem);
+  const ready = effectiveRecipients.length > 0 && items.length > 0 && itemErrors.every((e) => !e);
+
+  const { needed: willNeedApproval } = useNeedsApproval(effectiveRecipients.length);
   const limits = useQuery({ queryKey: ['sending-limits'], queryFn: api.sendingLimits, staleTime: 30_000 });
   // How many of the current chips are strangers to this line vs. already in a
   // conversation, so the ration hint below can use a real count instead of
@@ -117,11 +142,7 @@ export default function ComposePage() {
       )
     : null;
 
-  // A paused campaign is edited in place: its send ledger already records who
-  // received the message, so the edit only reaches the rest — and the sequence
-  // has to keep its shape (the server refuses an added or removed item).
-  const partlySent = !!draft?.partlySent;
-  const messages = recipients.length * items.length;
+  const messages = effectiveRecipients.length * items.length;
   const delayMinNum = Math.max(0, Number(delayMinOverride) || 0);
   const delayMaxNum = Math.max(delayMinNum, Number(delayMaxOverride) || delayMinNum);
   const avgDelaySec = delayOverrideOn
@@ -162,7 +183,7 @@ export default function ComposePage() {
     setFeedback('');
     setFeedbackJobId(null);
     try {
-      const result = await run(recipients, finalizeItems(items), batchRule() ?? null);
+      const result = await run(effectiveRecipients, finalizeItems(items), batchRule() ?? null);
       setFeedback(
         result.held
           ? 'Submitted for approval — it sends once an approver releases it (Scheduled tab)'
@@ -198,7 +219,7 @@ export default function ComposePage() {
         // updates the original pending (or paused) job in place when editing
         id: editingJobId,
         scheduledAt: new Date(when).toISOString(),
-        recipients,
+        recipients: effectiveRecipients,
         items: finalizeItems(items),
         ...(repeat !== undefined ? { repeat } : {}),
         ...(batch !== undefined ? { batch } : {}),
@@ -278,6 +299,13 @@ export default function ComposePage() {
               {classification.data.groups > 0 ? `, ${classification.data.groups} group(s)` : ''}.
             </p>
           )}
+          {recentFilterOn && !partlySent && recentSet.size > 0 && (
+            <p className="mt-1 text-xs text-amber-700">
+              ↳ <b>{recentSet.size}</b> contacted in the last {recentDaysNum} day
+              {recentDaysNum === 1 ? '' : 's'} — sending to <b>{effectiveRecipients.length}</b> instead
+              of {recipients.length}.
+            </p>
+          )}
         </div>
 
         {overRation && (
@@ -324,8 +352,8 @@ export default function ComposePage() {
               className="flex-1 rounded-lg bg-wa py-2.5 text-sm font-semibold text-white hover:bg-wa-dark disabled:opacity-50"
             >
               {willNeedApproval
-                ? `Submit for approval (${recipients.length} recipients)`
-                : `Send ${items.length > 1 ? `Sequence (${items.length})` : 'Message'} to ${recipients.length} recipient${recipients.length === 1 ? '' : 's'}`}
+                ? `Submit for approval (${effectiveRecipients.length} recipients)`
+                : `Send ${items.length > 1 ? `Sequence (${items.length})` : 'Message'} to ${effectiveRecipients.length} recipient${effectiveRecipients.length === 1 ? '' : 's'}`}
             </button>
             <button
               onClick={() => setShowSchedule(!showSchedule)}
@@ -340,6 +368,39 @@ export default function ComposePage() {
             (sending now starts the campaign). The two halves are independent:
             a sending window alone is the common case, batching is the extra. */}
         <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
+          {/* 0 — skip anyone contacted recently: changes WHO gets the message,
+              so it sits above pacing rather than inside it. Not offered while
+              editing a partly-sent campaign — that job's own sends would
+              otherwise poison the history it's checking against. */}
+          {!partlySent && (
+            <div className="space-y-1.5 border-b border-gray-200 pb-3">
+              <label className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={recentFilterOn}
+                  onChange={(e) => setRecentFilterOn(e.target.checked)}
+                  className="h-4 w-4 accent-wa"
+                />
+                <span className="font-medium text-gray-700">
+                  Skip anyone I contacted in the last N days
+                </span>
+              </label>
+              {recentFilterOn && (
+                <div className="flex flex-wrap items-center gap-2 pl-6 text-xs text-gray-600">
+                  <span>Within</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={recentDays}
+                    onChange={(e) => setRecentDays(e.target.value)}
+                    className="w-16 rounded-lg border border-gray-300 px-2 py-1 text-sm"
+                  />
+                  <span>days, checked against this line&apos;s send history — groups are never filtered.</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <p className="text-xs font-medium text-gray-700">
             Pacing for {messages.toLocaleString()} message{messages === 1 ? '' : 's'}
           </p>
