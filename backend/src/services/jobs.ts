@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/index.js';
-import { contactKey } from './phone.js';
 import { inQuietHours, nextClockTime } from './time.js';
 import type {
   BatchRule,
@@ -433,28 +432,6 @@ export class JobStore {
         `SELECT sent_at FROM job_sends WHERE job_id=? AND status='sent' AND sent_at IS NOT NULL
          ORDER BY sent_at DESC LIMIT 20`,
       ),
-      // Compose's "skip anyone I contacted in the last N days" filter: did THIS
-      // line send this recipient anything, in any job, within the window?
-      // Joined to jobs for the same instance scoping every other line-scoped
-      // read here uses — a contact this line's OWN history doesn't reach never
-      // counts, even if a different line on the same server messaged them.
-      recentContact: db.prepare(`
-        SELECT 1 AS hit FROM job_sends js JOIN jobs j ON j.id = js.job_id
-        WHERE js.recipient = @recipient AND js.status = 'sent' AND js.sent_at >= @cutoff
-          AND (@eff = '' OR COALESCE(NULLIF(j.instance,''), @def) = @eff)
-        LIMIT 1
-      `),
-      // Lists' "build from recent contacts" source: every individual (never a
-      // group) this line actually sent something to within the window, newest
-      // send first so a recipient hit more than once resolves to its most
-      // recent name.
-      recentRoster: db.prepare(`
-        SELECT js.recipient, j.recipients FROM job_sends js JOIN jobs j ON j.id = js.job_id
-        WHERE js.status = 'sent' AND js.is_group = 0 AND js.sent_at >= @cutoff
-          AND js.recipient != 'status@broadcast'
-          AND (@eff = '' OR COALESCE(NULLIF(j.instance,''), @def) = @eff)
-        ORDER BY js.sent_at DESC
-      `),
       // "Retry the ones that failed": failed rows go back to pending with a
       // clean slate, so continuing the campaign picks them up. Sent and skipped
       // rows are untouched — nobody is messaged twice.
@@ -651,65 +628,6 @@ export class JobStore {
       n: number;
     }>;
     return rows.map((r) => ({ day: r.day, count: r.n }));
-  }
-
-  /**
-   * Which of `recipients` this line already sent a message to (any campaign
-   * or chat reply that actually went out) within the last `days` days —
-   * outbound only, mirroring the send ledger, not who replied to us. Powers
-   * Compose's opt-in "skip anyone I contacted in the last N days" filter.
-   * Groups (no contact key) and duplicates are dropped; a recipient never
-   * sent to at all is never returned, even with the filter on.
-   */
-  recentlyContacted(
-    recipients: readonly unknown[],
-    days: number,
-    filter: InstanceFilter = NO_FILTER,
-  ): string[] {
-    const cutoff = new Date(Date.now() - Math.max(1, days) * 86_400_000).toISOString();
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const raw of recipients) {
-      const key = contactKey(raw);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      const hit = this.q.recentContact.get({ recipient: key, eff: filter.eff, def: filter.def, cutoff });
-      if (hit) out.push(String(raw));
-    }
-    return out;
-  }
-
-  /**
-   * Everyone this line actually sent a message to (any campaign or chat
-   * reply, individuals only) within the last `days` days — the roster
-   * Lists' "add from recent contacts" source populates a new list with.
-   * Same outbound-only signal as {@link recentlyContacted}; a recipient
-   * seen more than once keeps the name from its most recent send.
-   */
-  recentRoster(
-    days: number,
-    filter: InstanceFilter = NO_FILTER,
-  ): Array<{ recipient: string; isGroup: boolean; name: string }> {
-    const cutoff = new Date(Date.now() - Math.max(1, days) * 86_400_000).toISOString();
-    const rows = this.q.recentRoster.all({ eff: filter.eff, def: filter.def, cutoff }) as Array<{
-      recipient: string;
-      recipients: string;
-    }>;
-    const out: Array<{ recipient: string; isGroup: boolean; name: string }> = [];
-    const seen = new Set<string>();
-    for (const row of rows) {
-      if (seen.has(row.recipient)) continue;
-      seen.add(row.recipient);
-      let name = '';
-      try {
-        const list = JSON.parse(row.recipients) as Array<{ id: string; name?: string }>;
-        name = list.find((r) => r.id === row.recipient)?.name ?? '';
-      } catch {
-        /* malformed recipients JSON on that job — fall back to no name */
-      }
-      out.push({ recipient: row.recipient, isGroup: false, name });
-    }
-    return out;
   }
 
   byId(id: string): Job | null {

@@ -104,8 +104,9 @@ export function registerMeta(app: FastifyInstance, cfg: Config, limits?: Sending
 
   // Compose's opt-in "skip anyone I contacted in the last N days" filter:
   // given a candidate list + a day count, which of them did THIS line already
-  // send something to inside that window (outbound only, any campaign or chat
-  // reply) — so the reduced count is known before Send, not discovered later.
+  // send something to inside that window — ANY outbound send (a campaign, a
+  // chat reply, the AI agent, an opt-out ack; see OutboundLog) — so the
+  // reduced count is known before Send, not discovered later.
   if (limits?.recentContact)
     app.post('/api/sending-limits/recency', async (req, reply) => {
       const body = req.body as { recipients?: unknown; days?: unknown; instance?: string } | undefined;

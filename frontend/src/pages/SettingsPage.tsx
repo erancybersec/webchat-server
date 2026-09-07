@@ -527,7 +527,7 @@ function MaintenanceCard() {
       else {
         setPreview(null);
         toast(
-          `Cleaned up: ${r.jobs} jobs, ${r.sends} ledger rows, ${r.messageAgents} attributions, ${r.messageCache} cached bodies, ${r.messageEdits} edit versions` +
+          `Cleaned up: ${r.jobs} jobs, ${r.sends} ledger rows, ${r.outboundSends} outbound log rows, ${r.messageAgents} attributions, ${r.messageCache} cached bodies, ${r.messageEdits} edit versions` +
             (r.vacuumed ? ` — DB ${fmtBytes(r.bytesBefore)} → ${fmtBytes(r.bytesAfter)}` : '') +
             (r.note ? ` (${r.note})` : ''),
         );
@@ -577,6 +577,7 @@ function MaintenanceCard() {
           >
             Delete{' '}
             {preview.jobs +
+            preview.outboundSends +
             preview.messageAgents +
             preview.messageCache +
             preview.messageEdits +
@@ -589,9 +590,10 @@ function MaintenanceCard() {
       {preview && (
         <p className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600" role="status">
           Would delete <b>{preview.jobs}</b> jobs ({preview.sends} ledger rows),{' '}
-          <b>{preview.messageAgents}</b> message attributions, <b>{preview.messageCache}</b> cached
-          message bodies, <b>{preview.messageEdits}</b> edit versions and{' '}
-          <b>{preview.reminders}</b> old reminders. Nothing has been deleted yet.
+          <b>{preview.outboundSends}</b> outbound log rows, <b>{preview.messageAgents}</b> message
+          attributions, <b>{preview.messageCache}</b> cached message bodies,{' '}
+          <b>{preview.messageEdits}</b> edit versions and <b>{preview.reminders}</b> old reminders.
+          Nothing has been deleted yet.
         </p>
       )}
     </div>

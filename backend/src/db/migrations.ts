@@ -756,4 +756,23 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_job_sends_recipient_sent ON job_sends(recipient, status, sent_at);
     `,
   },
+  {
+    id: '026-outbound-sends',
+    sql: `
+      -- Every outbound message the server has actually sent, one row per
+      -- send, written from Sender.sendOne() — the single choke point every
+      -- send path (campaigns, a chat reply, the AI agent, an opt-out
+      -- acknowledgment) already funnels through for the blacklist check.
+      -- job_sends only covers campaign/broadcast sends, so it undercounted
+      -- "recently contacted" for anyone replied to from the Chat tab; this
+      -- table is the authoritative signal instead.
+      CREATE TABLE outbound_sends (
+        recipient  TEXT NOT NULL,
+        instance   TEXT NOT NULL DEFAULT '',
+        sent_at    TEXT NOT NULL
+      );
+      CREATE INDEX idx_outbound_sends_recipient ON outbound_sends(recipient, sent_at);
+      CREATE INDEX idx_outbound_sends_sent_at ON outbound_sends(sent_at);
+    `,
+  },
 ];

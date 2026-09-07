@@ -164,6 +164,7 @@ export interface CleanupResult {
   olderThanDays: number;
   jobs: number;
   sends: number;
+  outboundSends: number;
   messageAgents: number;
   messageCache: number;
   messageEdits: number;

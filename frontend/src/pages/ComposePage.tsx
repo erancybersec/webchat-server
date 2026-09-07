@@ -384,6 +384,18 @@ export default function ComposePage() {
                 <span className="font-medium text-gray-700">
                   Skip anyone I contacted in the last N days
                 </span>
+                <span
+                  className="cursor-help text-gray-400"
+                  title={
+                    '"Contacted" = this line sent them anything — a campaign, a scheduled send, ' +
+                    'or a manual reply typed in the Chat tab (even the AI agent or an opt-out ' +
+                    "acknowledgment counts). It doesn't require a reply back from them, and it's " +
+                    'separate from the "already in a conversation" count above, which is about ' +
+                    'whether THEY have ever messaged you.'
+                  }
+                >
+                  ⓘ
+                </span>
               </label>
               {recentFilterOn && (
                 <div className="flex flex-wrap items-center gap-2 pl-6 text-xs text-gray-600">

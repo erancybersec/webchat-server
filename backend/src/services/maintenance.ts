@@ -15,6 +15,7 @@ export interface CleanupResult {
   olderThanDays: number;
   jobs: number;
   sends: number;
+  outboundSends: number;
   messageAgents: number;
   messageCache: number;
   /** prior edit versions purged (message_edits rows). */
@@ -30,6 +31,7 @@ export interface CleanupResult {
 const COUNTED_TABLES = [
   'jobs',
   'job_sends',
+  'outbound_sends',
   'message_agents',
   'message_cache',
   'message_deletes',
@@ -131,6 +133,7 @@ export class MaintenanceService {
 
     let jobs: number;
     let sends: number;
+    let outboundSends: number;
     let messageAgents: number;
     let messageCache: number;
     let messageEdits: number;
@@ -140,6 +143,9 @@ export class MaintenanceService {
       sends = (this.db
         .prepare(`SELECT COUNT(*) AS n FROM job_sends WHERE job_id IN (SELECT id FROM jobs WHERE ${jobsWhere})`)
         .get({ cutoff }) as { n: number }).n;
+      outboundSends = (this.db
+        .prepare(`SELECT COUNT(*) AS n FROM outbound_sends WHERE sent_at < ?`)
+        .get(cutoff) as { n: number }).n;
       messageAgents = (this.db
         .prepare(`SELECT COUNT(*) AS n FROM message_agents WHERE sent_at < ?`)
         .get(cutoff) as { n: number }).n;
@@ -153,7 +159,7 @@ export class MaintenanceService {
         .prepare(`SELECT COUNT(*) AS n FROM reminders WHERE status IN ('fired','dismissed') AND due_at < ?`)
         .get(cutoff) as { n: number }).n;
       return {
-        dryRun, olderThanDays: days, jobs, sends, messageAgents, messageCache, messageEdits, reminders,
+        dryRun, olderThanDays: days, jobs, sends, outboundSends, messageAgents, messageCache, messageEdits, reminders,
         bytesBefore, bytesAfter: bytesBefore, vacuumed: false,
       };
     }
@@ -163,6 +169,7 @@ export class MaintenanceService {
         .prepare(`SELECT COUNT(*) AS n FROM job_sends WHERE job_id IN (SELECT id FROM jobs WHERE ${jobsWhere})`)
         .get({ cutoff }) as { n: number }).n;
       const j = this.db.prepare(`DELETE FROM jobs WHERE ${jobsWhere}`).run({ cutoff }).changes;
+      const o = this.db.prepare(`DELETE FROM outbound_sends WHERE sent_at < ?`).run(cutoff).changes;
       const m = this.db.prepare(`DELETE FROM message_agents WHERE sent_at < ?`).run(cutoff).changes;
       const c = this.db.prepare(`DELETE FROM message_cache WHERE created_at < ?`).run(cutoff).changes;
       // read receipts grow one row per read sent message — prune with the cache
@@ -185,10 +192,11 @@ export class MaintenanceService {
       const r = this.db
         .prepare(`DELETE FROM reminders WHERE status IN ('fired','dismissed') AND due_at < ?`)
         .run(cutoff).changes;
-      return { j, s, m, c, e, r };
+      return { j, s, o, m, c, e, r };
     })();
     jobs = counts.j;
     sends = counts.s;
+    outboundSends = counts.o;
     messageAgents = counts.m;
     messageCache = counts.c;
     messageEdits = counts.e;
@@ -209,9 +217,9 @@ export class MaintenanceService {
       (this.db.pragma('page_count', { simple: true }) as number) *
       (this.db.pragma('page_size', { simple: true }) as number);
     this.log(
-      `[maintenance] cleanup >${days}d: ${jobs} jobs, ${sends} sends, ${messageAgents} attributions, ${messageCache} cached bodies, ${messageEdits} edit versions, ${reminders} reminders` +
+      `[maintenance] cleanup >${days}d: ${jobs} jobs, ${sends} sends, ${outboundSends} outbound log rows, ${messageAgents} attributions, ${messageCache} cached bodies, ${messageEdits} edit versions, ${reminders} reminders` +
         (vacuumed ? `, vacuum ${bytesBefore} → ${bytesAfter} bytes` : ''),
     );
-    return { dryRun, olderThanDays: days, jobs, sends, messageAgents, messageCache, messageEdits, reminders, bytesBefore, bytesAfter, vacuumed, note };
+    return { dryRun, olderThanDays: days, jobs, sends, outboundSends, messageAgents, messageCache, messageEdits, reminders, bytesBefore, bytesAfter, vacuumed, note };
   }
 }

@@ -58,6 +58,7 @@ import { ListsStore } from './services/lists.js';
 import { MaintenanceService } from './services/maintenance.js';
 import { attachMessageCache, MessageCacheStore } from './services/msgcache.js';
 import { attachChatUnread, ChatUnreadStore } from './services/chatunread.js';
+import { OutboundLog } from './services/outbound.js';
 import { ReadReceiptStore } from './services/readreceipts.js';
 import { attachMessageStats, MessageStatsStore } from './services/msgstats.js';
 import { OptOutListener } from './services/optout.js';
@@ -101,6 +102,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
 
   const agents = new AgentsStore(db);
   const blacklist = new BlacklistStore(db);
+  const outbound = new OutboundLog(db);
   const jobs = new JobStore(db);
   const lists = new ListsStore(db);
   const quickReplies = new QuickRepliesStore(db);
@@ -121,7 +123,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
     cfg,
     (m) => app.log.info(m),
   );
-  const sender = new Sender(evo, blacklist, verification);
+  const sender = new Sender(evo, blacklist, verification, outbound);
   // Multi-instance: per-agent grants + the cached safe view of fetchInstances
   const instanceAccess = new InstanceAccess(cfg, agents);
   const instancesService = new InstancesService(evo);
@@ -326,7 +328,7 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   // identity the provision hook above just recorded.
   const guard = (key: PermissionKey) => requirePerm(key, { cfg, agents });
 
-  registerMeta(app, cfg, { quota: coldQuota, familiarity: familiarityStore, recentContact: jobs });
+  registerMeta(app, cfg, { quota: coldQuota, familiarity: familiarityStore, recentContact: outbound });
   // wake: immediate sends / reruns fire on save instead of waiting for the poll
   registerJobs(
     app,

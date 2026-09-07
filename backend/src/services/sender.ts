@@ -2,6 +2,7 @@ import type { JobItem } from '../types.js';
 import type { BlacklistStore } from './blacklist.js';
 import type { EvolutionApi } from './evolution.js';
 import { buildEvoRequest } from './messages.js';
+import type { OutboundLog } from './outbound.js';
 import { isNotOnWhatsAppError, type VerificationService } from './verification.js';
 
 export type SendOutcome =
@@ -36,6 +37,7 @@ export class Sender {
     private readonly evo: EvolutionApi,
     private readonly blacklist: BlacklistStore,
     private readonly verification?: VerificationService,
+    private readonly outbound?: OutboundLog,
   ) {}
 
   /**
@@ -60,7 +62,8 @@ export class Sender {
     if (enforceVerification && this.verification?.store.fresh(recipient)?.status === 'invalid') {
       return { status: 'skipped', reason: 'not_on_whatsapp' };
     }
-    const { endpoint, body } = buildEvoRequest(item, recipient, instance || this.evo.instance);
+    const effInstance = instance || this.evo.instance;
+    const { endpoint, body } = buildEvoRequest(item, recipient, effInstance);
     const r = await this.evo.call(endpoint, body, 'POST');
     if (!r.ok) {
       // "not on WhatsApp" is PERMANENT — retrying it just burns the send gap
@@ -72,6 +75,9 @@ export class Sender {
       }
       throw new Error(`evolution ${r.status}: ${r.text.slice(0, 200)}`);
     }
+    // The one place every send path — campaigns, a chat reply, the AI agent,
+    // an opt-out ack — agrees a message actually went out; see OutboundLog.
+    this.outbound?.record(recipient, effInstance);
     return { status: 'sent', messageId: extractMessageId(r.text) };
   }
 }

@@ -636,6 +636,16 @@ function ListEditor({
                     className="w-16 rounded-lg border border-gray-300 px-2 py-1 text-sm"
                   />
                   <span>days (this line's send history)</span>
+                  <span
+                    className="cursor-help text-gray-400"
+                    title={
+                      "Anyone this line sent anything to — a campaign, a scheduled send, or a " +
+                      'manual reply typed in the Chat tab (even the AI agent or an opt-out ' +
+                      "acknowledgment counts). It doesn't require a reply back from them."
+                    }
+                  >
+                    ⓘ
+                  </span>
                   <button
                     onClick={() => void addFromRecent()}
                     disabled={addingRecent}
