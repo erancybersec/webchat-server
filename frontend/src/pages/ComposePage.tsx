@@ -301,7 +301,7 @@ export default function ComposePage() {
           )}
           {recentFilterOn && !partlySent && recentSet.size > 0 && (
             <p className="mt-1 text-xs text-amber-700">
-              ↳ <b>{recentSet.size}</b> contacted in the last {recentDaysNum} day
+              ↳ <b>{recentSet.size}</b> already sent something by this line in the last {recentDaysNum} day
               {recentDaysNum === 1 ? '' : 's'} — sending to <b>{effectiveRecipients.length}</b> instead
               of {recipients.length}.
             </p>
