@@ -1,4 +1,7 @@
 import type { Db } from '../db/index.js';
+import { unwrapEvent } from './envelope.js';
+import type { EventRelay } from './events.js';
+import { messageTimeMs } from './msgstats.js';
 import { contactKey } from './phone.js';
 
 /** Instance scoping shared with every other line-scoped read in the app. */
@@ -10,13 +13,14 @@ export interface InstanceFilter {
 export const NO_FILTER: InstanceFilter = { eff: '', def: '' };
 
 /**
- * Every outbound message this line has actually sent, one row per send —
- * written from Sender.sendOne(), the single choke point every send path
+ * Every outbound message this line has actually sent, one row per send, from
+ * two independent write paths (see attachOutboundLog below for the second):
+ * Sender.sendOne() — the single choke point every send made THROUGH this app
  * (campaigns, a chat reply, the AI agent, an opt-out acknowledgment) already
- * funnels through for the blacklist check. This is deliberately broader than
- * the job ledger (job_sends): "recently contacted" means this line sent this
- * person ANYTHING, not just that they were in a campaign — a manual reply
- * from the Chat tab counts exactly the same as a scheduled broadcast.
+ * funnels through for the blacklist check — covers everything except one
+ * thing it structurally cannot see: a message sent directly from the linked
+ * phone's own WhatsApp app. "Recently contacted" means this line sent this
+ * person ANYTHING, from any platform, not just that they were in a campaign.
  */
 export class OutboundLog {
   private readonly insert;
@@ -43,11 +47,17 @@ export class OutboundLog {
     `);
   }
 
-  /** Called after every successful send. Groups (no contact key) are never logged. */
-  record(recipient: string, instance: string | undefined): void {
+  /**
+   * Called after every successful send, and again (redundantly but
+   * harmlessly — both reads below dedupe by recipient) from the live-relay
+   * listener below for messages Evolution echoes back. Groups (no contact
+   * key) are never logged. `at`: the message's own time when known (the
+   * relay path), defaulting to now (the direct-send path).
+   */
+  record(recipient: string, instance: string | undefined, at?: number): void {
     const key = contactKey(recipient);
     if (!key) return;
-    this.insert.run(key, instance ?? '', new Date().toISOString());
+    this.insert.run(key, instance ?? '', new Date(at ?? Date.now()).toISOString());
   }
 
   /**
@@ -97,4 +107,47 @@ export class OutboundLog {
     }
     return out;
   }
+}
+
+interface UpsertRecord {
+  key?: { remoteJid?: string; fromMe?: boolean };
+  messageTimestamp?: unknown;
+}
+
+// Same replay guard as attachMessageStats: a websocket reconnect makes
+// Evolution replay recent history (Baileys offline sync), which would
+// otherwise flood outbound_sends with rows on every reconnect.
+const MAX_AGE_MS = 7 * 86_400_000;
+const MAX_FUTURE_MS = 86_400_000;
+
+/**
+ * Catches the one send path Sender.sendOne() can never see: a message sent
+ * directly from the linked phone's own WhatsApp app, not through this
+ * server. Evolution mirrors it back over the live websocket the same way it
+ * mirrors an app-sent message (fromMe: true either way) — this is the only
+ * way to observe it. App-sent messages arrive here too, redundantly; that's
+ * fine, both recentlyContacted()/recentRoster() already dedupe by recipient.
+ */
+export function attachOutboundLog(
+  relay: EventRelay,
+  outbound: OutboundLog,
+  log: (msg: string) => void = () => {},
+): void {
+  relay.subscribe((e) => {
+    if (e.event !== 'MESSAGES_UPSERT' && e.event !== 'messages.upsert') return;
+    const { instance, records } = unwrapEvent(e.data);
+    for (const record of records as UpsertRecord[]) {
+      try {
+        if (!record.key?.fromMe) continue;
+        const jid = record.key?.remoteJid ?? '';
+        if (!jid || jid === 'status@broadcast') continue;
+        const t = messageTimeMs(record.messageTimestamp) ?? Date.now();
+        const now = Date.now();
+        if (t < now - MAX_AGE_MS || t > now + MAX_FUTURE_MS) continue;
+        outbound.record(jid, instance ?? '', t);
+      } catch (err) {
+        log(`[outbound] error: ${String(err)}`);
+      }
+    }
+  });
 }

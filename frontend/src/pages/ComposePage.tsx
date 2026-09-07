@@ -387,9 +387,10 @@ export default function ComposePage() {
                 <span
                   className="cursor-help text-gray-400"
                   title={
-                    '"Contacted" = this line sent them anything — a campaign, a scheduled send, ' +
-                    'or a manual reply typed in the Chat tab (even the AI agent or an opt-out ' +
-                    "acknowledgment counts). It doesn't require a reply back from them, and it's " +
+                    '"Contacted" = this line sent them anything, from any platform — a campaign, ' +
+                    'a scheduled send, a manual reply typed in the Chat tab, a message sent ' +
+                    'directly from the linked phone, even the AI agent or an opt-out ' +
+                    "acknowledgment. It doesn't require a reply back from them, and it's " +
                     'separate from the "already in a conversation" count above, which is about ' +
                     'whether THEY have ever messaged you.'
                   }

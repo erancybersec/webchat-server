@@ -58,7 +58,7 @@ import { ListsStore } from './services/lists.js';
 import { MaintenanceService } from './services/maintenance.js';
 import { attachMessageCache, MessageCacheStore } from './services/msgcache.js';
 import { attachChatUnread, ChatUnreadStore } from './services/chatunread.js';
-import { OutboundLog } from './services/outbound.js';
+import { attachOutboundLog, OutboundLog } from './services/outbound.js';
 import { ReadReceiptStore } from './services/readreceipts.js';
 import { attachMessageStats, MessageStatsStore } from './services/msgstats.js';
 import { OptOutListener } from './services/optout.js';
@@ -235,6 +235,9 @@ export async function buildApp(opts: BuildOptions): Promise<App> {
   attachAckTracker(relay, jobs, (id) => readReceipts.markRead(id));
   const msgStats = new MessageStatsStore(db);
   attachMessageStats(relay, msgStats, (m) => app.log.info(m));
+  // Catches phone-sent messages (Sender.sendOne() only sees sends made
+  // through this app) so "recently contacted" reflects every platform.
+  attachOutboundLog(relay, outbound, (m) => app.log.info(m));
   // An inbound message is what makes someone "known" to the cold-contact cap.
   // Outbound never promotes a stranger — see ContactFamiliarityStore.
   // canon resolves the @lid every incoming direct message arrives under back to

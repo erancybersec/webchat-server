@@ -77,7 +77,14 @@ export class Sender {
     }
     // The one place every send path — campaigns, a chat reply, the AI agent,
     // an opt-out ack — agrees a message actually went out; see OutboundLog.
-    this.outbound?.record(recipient, effInstance);
+    // Best-effort: Evolution already accepted the send, so a logging failure
+    // here must never turn a real, successful send into a thrown error —
+    // that would read as 'failed' upstream and risk a duplicate retry.
+    try {
+      this.outbound?.record(recipient, effInstance);
+    } catch {
+      /* the send already succeeded; losing one "recently contacted" row is fine */
+    }
     return { status: 'sent', messageId: extractMessageId(r.text) };
   }
 }
