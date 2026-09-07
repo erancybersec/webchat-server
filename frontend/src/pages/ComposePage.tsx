@@ -351,9 +351,11 @@ export default function ComposePage() {
               disabled={!ready || progress?.running}
               className="flex-1 rounded-lg bg-wa py-2.5 text-sm font-semibold text-white hover:bg-wa-dark disabled:opacity-50"
             >
-              {willNeedApproval
-                ? `Submit for approval (${effectiveRecipients.length} recipients)`
-                : `Send ${items.length > 1 ? `Sequence (${items.length})` : 'Message'} to ${effectiveRecipients.length} recipient${effectiveRecipients.length === 1 ? '' : 's'}`}
+              {progress?.running
+                ? 'Sending…'
+                : willNeedApproval
+                  ? `Submit for approval (${effectiveRecipients.length} recipients)`
+                  : `Send ${items.length > 1 ? `Sequence (${items.length})` : 'Message'} to ${effectiveRecipients.length} recipient${effectiveRecipients.length === 1 ? '' : 's'}`}
             </button>
             <button
               onClick={() => setShowSchedule(!showSchedule)}
@@ -363,6 +365,11 @@ export default function ComposePage() {
             </button>
           </div>
         )}
+
+        {/* Right under the button that started it — a paced campaign can run
+            for a while, and burying this below the pacing controls and
+            Schedule panel below made a send look like it did nothing. */}
+        {progress && <SendProgress progress={progress} />}
 
         {/* Campaign pacing — always visible, and applies to both buttons above
             (sending now starts the campaign). The two halves are independent:
@@ -691,7 +698,6 @@ export default function ComposePage() {
           </div>
         )}
 
-        {progress && <SendProgress progress={progress} />}
         {feedback && (
           <div className="text-sm text-wa-dark">
             {feedback}
