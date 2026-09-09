@@ -66,7 +66,7 @@ export function progressLine(p: CampaignProgress): string {
  * second is the one thing on this row worth a second look.
  */
 export type HoldKind = 'routine' | 'attention';
-const ROUTINE_HOLD = /^(batch of \d+ sent|reached \d{1,2}:\d{2})$/;
+const ROUTINE_HOLD = /^(batch of \d+ sent|reached \d{1,2}:\d{2}|not an active day for this campaign)$/;
 function classifyHold(holdReason: string | null): HoldKind {
   return holdReason && !ROUTINE_HOLD.test(holdReason) ? 'attention' : 'routine';
 }
@@ -101,12 +101,16 @@ export function waitingLabel(p: CampaignProgress): { text: string; kind: HoldKin
   return null;
 }
 
-/** The sending window in words: "sends until 21:00, continues 09:00". */
+/** The sending window in words: "sends until 21:00, continues 09:00", plus the
+ *  day gate when one is set — "on Sun, Mon, Tue, Wed, Thu" on its own if there's
+ *  no hour window at all. */
 function windowSummary(rule: BatchRule): string | null {
-  if (!rule.pauseAt) return null;
-  return rule.resumeAt
+  const days = rule.activeDays?.length ? `on ${activeDaysLabel(rule.activeDays)}` : null;
+  if (!rule.pauseAt) return days;
+  const hours = rule.resumeAt
     ? `sends until ${rule.pauseAt}, then continues at ${rule.resumeAt}`
     : `sends until ${rule.pauseAt}, then waits for your Continue`;
+  return days ? `${hours}, ${days}` : hours;
 }
 
 /** "30m" or, ranged, "20–40m" — mirrors backend BatchRule.pauseMinMax. */
@@ -141,6 +145,49 @@ function nextClockTime(now: Date, hhmm: string): Date {
   return out;
 }
 
+/** `date` at exactly 'HH:MM', that same calendar day (mirrors backend services/time.ts). */
+function atClockOnDate(date: Date, hhmm: string): Date {
+  const t = parseHHMM(hhmm) ?? 0;
+  const out = new Date(date);
+  out.setHours(Math.floor(t / 60), t % 60, 0, 0);
+  return out;
+}
+
+/** Whether `date`'s day-of-week is allowed by `activeDays` (mirrors backend). */
+function isActiveDay(activeDays: number[] | undefined, date: Date): boolean {
+  return !activeDays?.length || activeDays.includes(date.getDay());
+}
+
+/** `date`'s effective pause/resume hours — a per-day override, or the rule's own (mirrors backend). */
+function dayWindow(rule: BatchRule, date: Date): { pauseAt?: string; resumeAt?: string } {
+  const override = rule.dayHours?.[date.getDay()];
+  return { pauseAt: override?.pauseAt ?? rule.pauseAt, resumeAt: override?.resumeAt ?? rule.resumeAt };
+}
+
+/** The next moment a day-limited campaign may resume (mirrors backend `nextActiveMoment`). */
+function nextActiveMoment(rule: BatchRule, from: Date): Date | null {
+  for (let offset = 1; offset <= 7; offset++) {
+    const d = new Date(from);
+    d.setDate(d.getDate() + offset);
+    d.setHours(0, 0, 0, 0);
+    if (!isActiveDay(rule.activeDays, d)) continue;
+    const w = dayWindow(rule, d);
+    if (!w.pauseAt) return d;
+    return w.resumeAt ? atClockOnDate(d, w.resumeAt) : null;
+  }
+  return null;
+}
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** "Sun, Mon, Tue, Wed, Thu" in calendar order, starting from Sunday. */
+export function activeDaysLabel(activeDays: number[]): string {
+  return [...activeDays]
+    .sort((a, b) => a - b)
+    .map((d) => DAY_NAMES[d])
+    .join(', ');
+}
+
 /**
  * When a paced campaign would actually finish — honoring both the batch wait
  * and the sending-hours window, which a plain `messages*avgDelaySec` never
@@ -158,9 +205,10 @@ export function estimateFinish(
 ): { finishAt: Date; totalMinutes: number } | null {
   if (messages <= 0 || avgDelaySec <= 0) return null;
   const hasBatch = !!rule.size;
-  const hasWindow = !!rule.pauseAt;
+  const hasDays = !!rule.activeDays?.length;
+  const hasWindow = !!rule.pauseAt || hasDays;
   if (hasBatch && rule.pauseMin === 0) return null;
-  if (hasWindow && !rule.resumeAt) return null;
+  if (!hasDays && hasWindow && !rule.resumeAt) return null;
   if (!hasBatch && !hasWindow)
     return {
       finishAt: new Date(now.getTime() + messages * avgDelaySec * 1000),
@@ -179,14 +227,33 @@ export function estimateFinish(
   let sinceBoundary = 0;
   let guard = 0; // a pathological rule (e.g. a window that never opens) must not hang
   while (remaining > 0 && guard++ < 100_000) {
-    if (hasWindow && inQuietHours(new Date(cursor), rule.pauseAt!, rule.resumeAt!)) {
+    const cursorDate = new Date(cursor);
+    if (hasDays && !isActiveDay(rule.activeDays, cursorDate)) {
+      const next = nextActiveMoment(rule, cursorDate);
+      if (!next) return null;
+      cursor = next.getTime();
+      sinceBoundary = 0;
+      continue;
+    }
+    const win = hasDays ? dayWindow(rule, cursorDate) : { pauseAt: rule.pauseAt, resumeAt: rule.resumeAt };
+    if (win.pauseAt && !win.resumeAt) return null;
+    if (win.pauseAt && inQuietHours(cursorDate, win.pauseAt, win.resumeAt!)) {
       // a fresh run starts counting its own batch from zero, exactly as a real
       // resume after a window pause is a new run
-      cursor = nextClockTime(new Date(cursor), rule.resumeAt!).getTime();
+      cursor = nextClockTime(cursorDate, win.resumeAt!).getTime();
       sinceBoundary = 0;
+      continue;
     }
-    const windowEnd = hasWindow ? nextClockTime(new Date(cursor), rule.pauseAt!).getTime() : Infinity;
-    const capByWindow = hasWindow ? Math.max(0, Math.floor((windowEnd - cursor) / msPerMsg)) : Infinity;
+    let dayCloseMs = Infinity;
+    if (hasDays) {
+      const midnight = new Date(cursorDate);
+      midnight.setDate(midnight.getDate() + 1);
+      midnight.setHours(0, 0, 0, 0);
+      dayCloseMs = midnight.getTime();
+    }
+    const windowEnd = win.pauseAt ? nextClockTime(cursorDate, win.pauseAt).getTime() : dayCloseMs;
+    const capByWindow =
+      win.pauseAt || hasDays ? Math.max(0, Math.floor((windowEnd - cursor) / msPerMsg)) : Infinity;
     const capByBatch = hasBatch ? rule.size! - sinceBoundary : Infinity;
     const chunk = Math.min(remaining, capByWindow, capByBatch);
     if (chunk <= 0) {

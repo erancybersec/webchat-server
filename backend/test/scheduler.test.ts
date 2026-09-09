@@ -371,6 +371,48 @@ describe('Scheduler', () => {
     expect(evo.calls.map((c) => c.body.text).sort()).toEqual(['hello', 'second']);
   });
 
+  describe('day-of-week gate', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('does not send on an inactive day, and re-queues for the next active one', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const now = new Date(2026, 7, 19, 10, 0, 0);
+      vi.setSystemTime(now);
+      const otherDay = (now.getDay() + 2) % 7; // some day that isn't today
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: new Date(now.getTime() - 60_000).toISOString(),
+        recipients: [r('972521111111')],
+        items: [textItem],
+        batch: { pauseMin: 0, activeDays: [otherDay] },
+      });
+      await scheduler.tick();
+
+      expect(evo.calls).toHaveLength(0);
+      const job = jobs.byId('j1')!;
+      expect(job.status).toBe('pending');
+      expect(job.result).toContain('not an active day');
+      expect(new Date(job.scheduledAt).getDay()).toBe(otherDay);
+    });
+
+    it('sends normally when today is one of the active days', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const now = new Date(2026, 7, 19, 10, 0, 0);
+      vi.setSystemTime(now);
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: new Date(now.getTime() - 60_000).toISOString(),
+        recipients: [r('972521111111')],
+        items: [textItem],
+        batch: { pauseMin: 0, activeDays: [now.getDay()] },
+      });
+      await scheduler.tick();
+
+      expect(evo.sentTo()).toEqual(['972521111111']);
+      expect(jobs.byId('j1')!.status).toBe('done');
+    });
+  });
+
   describe('sendOneNow', () => {
     it('sends only the one recipient their next owed item, personalized, without touching anyone else', async () => {
       jobs.upsert({

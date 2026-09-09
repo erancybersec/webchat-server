@@ -3,7 +3,7 @@ import type { JobStore } from './jobs.js';
 import { personalizeItem, usesWaName } from './personalize.js';
 import { digitsOnly, toChatJid } from './phone.js';
 import type { Sender } from './sender.js';
-import { inQuietHours, nextClockTime, quietHoursEnd } from './time.js';
+import { dayWindow, inQuietHours, isActiveDay, nextActiveMoment, nextClockTime, quietHoursEnd } from './time.js';
 
 /** Seam for {{wa_name}} resolution (ContactNameResolver in production). */
 export interface ContactNames {
@@ -320,13 +320,24 @@ export class Scheduler {
     // never sent anything, so it doesn't spend the batch.
     const batch = job.batch;
     let wireSends = 0;
-    // 'pause at HH:MM' — fixed for this run, so a run always has room to work
-    // and a manual Continue past the cutoff isn't instantly re-stopped.
-    const cutoff = batch?.pauseAt ? nextClockTime(new Date(), batch.pauseAt) : null;
     // set when the campaign steps out of this run without finishing:
     // { at } = re-queue then, { at: null } = hold 'paused' for a human
     let interrupted: { at: Date | null; why: string } | null = null;
     let pausedByOperator = false;
+    // Day-of-week gate, checked before this run even starts sending — today
+    // might not be one of the days the campaign is allowed on.
+    if (batch?.activeDays?.length && !isActiveDay(batch.activeDays, new Date())) {
+      interrupted = {
+        at: nextActiveMoment(batch, new Date()),
+        why: 'not an active day for this campaign',
+      };
+    }
+    // 'pause at HH:MM' — fixed for this run, so a run always has room to work
+    // and a manual Continue past the cutoff isn't instantly re-stopped. Reads
+    // TODAY's effective hours — a per-day override in dayHours, or the rule's
+    // own pauseAt when today has none.
+    const todayWindow = dayWindow(batch, new Date());
+    const cutoff = !interrupted && todayWindow.pauseAt ? nextClockTime(new Date(), todayWindow.pauseAt) : null;
 
     // {{name}} personalization source — recipient display names from Compose
     const names = new Map(job.recipients.map((r) => [r.id, r.name ?? '']));
@@ -424,11 +435,26 @@ export class Scheduler {
           break;
         }
         job = liveJob;
-        // 'pause at HH:MM' reached — stop, and pick up at resumeAt when set
+        // The day rolled over mid-run (a long batch can cross midnight) into
+        // one the campaign isn't allowed on.
+        if (batch?.activeDays?.length && !isActiveDay(batch.activeDays, new Date())) {
+          interrupted = {
+            at: nextActiveMoment(batch, new Date()),
+            why: 'not an active day for this campaign',
+          };
+          break;
+        }
+        // 'pause at HH:MM' reached — stop, and pick up at resumeAt when set.
+        // With a day gate, that's the next active day's own start rather than
+        // a plain "tomorrow at resumeAt" — a day off doesn't get skipped by luck.
         if (cutoff && Date.now() >= cutoff.getTime()) {
           interrupted = {
-            at: batch?.resumeAt ? nextClockTime(new Date(), batch.resumeAt) : null,
-            why: `reached ${batch?.pauseAt}`,
+            at: batch?.activeDays?.length
+              ? nextActiveMoment(batch, new Date())
+              : batch?.resumeAt
+                ? nextClockTime(new Date(), batch.resumeAt)
+                : null,
+            why: `reached ${todayWindow.pauseAt}`,
           };
           break;
         }
@@ -549,7 +575,9 @@ export class Scheduler {
       // would mark them failed for a reason that has nothing to do with them.
       if (!interrupted && !cancelled && !pausedByOperator && deferredCold > 0) {
         interrupted = {
-          at: nextClockTime(new Date(), batch?.resumeAt || '09:00'),
+          at: batch?.activeDays?.length
+            ? nextActiveMoment(batch, new Date()) ?? nextClockTime(new Date(), '09:00')
+            : nextClockTime(new Date(), batch?.resumeAt || '09:00'),
           why: `daily cold-contact cap reached — ${deferredCold} first-time recipient${deferredCold === 1 ? '' : 's'} held back`,
         };
       }

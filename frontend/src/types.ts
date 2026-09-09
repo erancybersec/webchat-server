@@ -55,6 +55,15 @@ export interface BatchRule {
   /** Per-compose override of the delay between messages for this run only, in
    *  seconds — replaces the Settings default outright. Presence = override is on. */
   delay?: { minSec: number; maxSec: number };
+  /** Day-of-week gate (0=Sun..6=Sat) — non-empty = the campaign only sends on
+   *  these days, every other day rolls to the next one in the list. Absent/empty
+   *  = every day (the feature is off). */
+  activeDays?: number[];
+  /** Per-day override of pauseAt/resumeAt, keyed by day-of-week (0-6). A day
+   *  missing from this map (or a missing field on one that's present) falls
+   *  back to the rule's own pauseAt/resumeAt. Only meaningful alongside
+   *  activeDays — a day-limited campaign is what "certain days & times" means. */
+  dayHours?: Record<number, { pauseAt?: string; resumeAt?: string }>;
 }
 
 export interface Job {

@@ -25,6 +25,24 @@ function toLocalInput(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const DAYS: Array<{ day: number; letter: string; name: string }> = [
+  { day: 0, letter: 'S', name: 'Sun' },
+  { day: 1, letter: 'M', name: 'Mon' },
+  { day: 2, letter: 'T', name: 'Tue' },
+  { day: 3, letter: 'W', name: 'Wed' },
+  { day: 4, letter: 'T', name: 'Thu' },
+  { day: 5, letter: 'F', name: 'Fri' },
+  { day: 6, letter: 'S', name: 'Sat' },
+];
+
+/** '21:00' → '9:00 PM' — a time input's value read back for a human. */
+function fmtTime(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date();
+  d.setHours(h ?? 0, m ?? 0, 0, 0);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 /** v1-parity Compose: recipient chips + an ordered multi-item Message Sequence. */
 export default function ComposePage() {
   const qc = useQueryClient();
@@ -57,6 +75,46 @@ export default function ComposePage() {
   const [pauseAt, setPauseAt] = useState(draft?.batch?.pauseAt ?? '21:00');
   const [resumeAt, setResumeAt] = useState(draft?.batch?.resumeAt ?? '09:00');
   const [autoResume, setAutoResume] = useState(!!draft?.batch?.resumeAt);
+  /** "and continue at" only means anything once the window itself is on. */
+  function onWindowOnChange(checked: boolean) {
+    setWindowOn(checked);
+    if (!checked) setAutoResume(false);
+  }
+  // 1b. active days & per-day hour overrides — an addition to the window
+  // above, not a replacement: a day missing its own hours falls back to it.
+  const [daysOn, setDaysOn] = useState(!!draft?.batch?.activeDays?.length);
+  const [activeDays, setActiveDays] = useState<number[]>(
+    draft?.batch?.activeDays ?? [0, 1, 2, 3, 4, 5, 6],
+  );
+  const [dayHours, setDayHours] = useState<Record<number, { pauseAt?: string; resumeAt?: string }>>(
+    draft?.batch?.dayHours ?? {},
+  );
+  function toggleDay(day: number) {
+    setActiveDays((prev) =>
+      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b),
+    );
+  }
+  /** Turning the section back on with nothing left selected (every day was
+   *  clicked off, then the section itself was unchecked) starts over at
+   *  "every day" — re-checking it should offer a sending day, not instantly
+   *  repeat the "pick at least one" warning the user just walked away from. */
+  function onDaysOnChange(checked: boolean) {
+    setDaysOn(checked);
+    if (checked && activeDays.length === 0) setActiveDays([0, 1, 2, 3, 4, 5, 6]);
+  }
+  function customizeDay(day: number) {
+    setDayHours((prev) => ({
+      ...prev,
+      [day]: { pauseAt, ...(autoResume ? { resumeAt } : {}) },
+    }));
+  }
+  function useDefaultForDay(day: number) {
+    setDayHours((prev) => {
+      const next = { ...prev };
+      delete next[day];
+      return next;
+    });
+  }
   // 2. batches: stop every N messages
   const [batchOn, setBatchOn] = useState(!!draft?.batch?.size);
   const [batchSize, setBatchSize] = useState(String(draft?.batch?.size ?? 50));
@@ -112,7 +170,11 @@ export default function ComposePage() {
     : recipients;
 
   const itemErrors = items.map(validateItem);
-  const ready = effectiveRecipients.length > 0 && items.length > 0 && itemErrors.every((e) => !e);
+  const ready =
+    effectiveRecipients.length > 0 &&
+    items.length > 0 &&
+    itemErrors.every((e) => !e) &&
+    (!daysOn || activeDays.length > 0);
 
   const { needed: willNeedApproval } = useNeedsApproval(effectiveRecipients.length);
   const limits = useQuery({ queryKey: ['sending-limits'], queryFn: api.sendingLimits, staleTime: 30_000 });
@@ -153,9 +215,12 @@ export default function ComposePage() {
     ? `${settings.data.timezone}, now ${new Date(settings.data.serverTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : '';
 
+  const daysActive = daysOn && activeDays.length > 0;
+
   /** undefined = leave the job's pacing alone; null = clear it. */
   function batchRule(): BatchRule | null | undefined {
-    if (!windowOn && !batchOn && !coldCapOn && !delayOverrideOn) return partlySent ? undefined : null;
+    if (!windowOn && !batchOn && !coldCapOn && !delayOverrideOn && !daysActive)
+      return partlySent ? undefined : null;
     const rule: BatchRule = {
       pauseMin: batchOn && batchAuto ? Math.max(0, Math.round(Number(batchPauseMin) || 0)) : 0,
     };
@@ -170,11 +235,25 @@ export default function ComposePage() {
       rule.pauseAt = pauseAt;
       if (autoResume) rule.resumeAt = resumeAt;
     }
+    if (daysActive) {
+      rule.activeDays = activeDays;
+      // only the still-selected days, only ones actually customized, and never
+      // a stale resumeAt the UI hid the moment "and continue at" went off —
+      // the day's own field disappears with it, not just visually
+      const cleaned: Record<number, { pauseAt?: string; resumeAt?: string }> = {};
+      for (const d of activeDays) {
+        const ov = dayHours[d];
+        if (!ov) continue;
+        cleaned[d] = autoResume ? ov : { pauseAt: ov.pauseAt };
+      }
+      if (Object.keys(cleaned).length) rule.dayHours = cleaned;
+    }
     if (coldCapOn) rule.coldCap = { dailyCap: coldCapDailyNum };
     if (delayOverrideOn) rule.delay = { minSec: delayMinNum, maxSec: delayMaxNum };
     return rule;
   }
-  const rule = windowOn || batchOn || coldCapOn || delayOverrideOn ? (batchRule() ?? null) : null;
+  const rule =
+    windowOn || batchOn || coldCapOn || delayOverrideOn || daysActive ? (batchRule() ?? null) : null;
   // an honest finish moment even for an unbroken run — Compose shouldn't ever
   // say nothing about when a send will be done, paced or not
   const est = messages > 0 ? estimateFinish(rule ?? { pauseMin: 0 }, messages, avgDelaySec) : null;
@@ -431,7 +510,7 @@ export default function ComposePage() {
               <input
                 type="checkbox"
                 checked={windowOn}
-                onChange={(e) => setWindowOn(e.target.checked)}
+                onChange={(e) => onWindowOnChange(e.target.checked)}
                 className="h-4 w-4 accent-wa"
               />
               <span className="font-medium text-gray-700">Send only between certain hours</span>
@@ -468,6 +547,135 @@ export default function ComposePage() {
                 />
                 {!autoResume && (
                   <span className="text-gray-400">(otherwise it waits for your Continue)</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 1b — active days, with an optional per-day hour override on top of
+              the window above (a day missing its own hours falls back to it) */}
+          <div className="space-y-1.5">
+            <label className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+              <input
+                type="checkbox"
+                checked={daysOn}
+                onChange={(e) => onDaysOnChange(e.target.checked)}
+                className="h-4 w-4 accent-wa"
+              />
+              <span className="font-medium text-gray-700">Limit to certain days &amp; times</span>
+            </label>
+            {daysOn && (
+              <div className="space-y-2 pl-6">
+                <div className="flex flex-wrap gap-1.5">
+                  {DAYS.map(({ day, letter, name }) => (
+                    <button
+                      key={day}
+                      type="button"
+                      title={name}
+                      onClick={() => toggleDay(day)}
+                      className={`h-7 w-7 rounded-lg border text-xs font-bold ${
+                        activeDays.includes(day)
+                          ? 'border-wa bg-wa text-white'
+                          : 'border-gray-300 text-gray-500 hover:border-gray-400'
+                      }`}
+                    >
+                      {letter}
+                    </button>
+                  ))}
+                </div>
+                {activeDays.length === 0 ? (
+                  <p className="text-xs text-red-500">
+                    Pick at least one day, or the campaign has nowhere to send.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-gray-600">
+                      Sends only on{' '}
+                      <b className="text-gray-700">
+                        {DAYS.filter((d) => activeDays.includes(d.day))
+                          .map((d) => d.name)
+                          .join(', ')}
+                      </b>{' '}
+                      — every other day is skipped, and anyone still pending rolls to the next
+                      active day.
+                    </p>
+                    <div className="divide-y divide-gray-200 rounded-lg border border-gray-200 bg-white">
+                      {DAYS.filter((d) => activeDays.includes(d.day)).map(({ day, name }) => {
+                        const override = dayHours[day];
+                        return (
+                          <div
+                            key={day}
+                            className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs text-gray-600"
+                          >
+                            <span className="w-9 font-semibold text-gray-700">{name}</span>
+                            {!override ? (
+                              <>
+                                <span className="flex-1">
+                                  {windowOn
+                                    ? autoResume
+                                      ? <>Default hours — pause <b>{fmtTime(pauseAt)}</b>, continue{' '}
+                                          <b>{fmtTime(resumeAt)}</b></>
+                                      : <>Default hours — pause at <b>{fmtTime(pauseAt)}</b>, stays
+                                          paused until resumed</>
+                                    : 'No hour limit — sends any time on this day'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => customizeDay(day)}
+                                  className="font-semibold text-blue-600 hover:underline"
+                                >
+                                  Customize
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="rounded border border-wa bg-green-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-wa-dark">
+                                  Custom
+                                </span>
+                                <span className="flex flex-1 flex-wrap items-center gap-1.5">
+                                  Pause
+                                  <input
+                                    type="time"
+                                    value={override.pauseAt ?? pauseAt}
+                                    onChange={(e) =>
+                                      setDayHours((prev) => ({
+                                        ...prev,
+                                        [day]: { ...prev[day], pauseAt: e.target.value },
+                                      }))
+                                    }
+                                    className="rounded border border-gray-300 px-1.5 py-0.5"
+                                  />
+                                  {autoResume && (
+                                    <>
+                                      continue
+                                      <input
+                                        type="time"
+                                        value={override.resumeAt ?? resumeAt}
+                                        onChange={(e) =>
+                                          setDayHours((prev) => ({
+                                            ...prev,
+                                            [day]: { ...prev[day], resumeAt: e.target.value },
+                                          }))
+                                        }
+                                        className="rounded border border-gray-300 px-1.5 py-0.5"
+                                      />
+                                    </>
+                                  )}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => useDefaultForDay(day)}
+                                  className="font-semibold text-blue-600 hover:underline"
+                                >
+                                  Use default
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
               </div>
             )}
@@ -625,8 +833,8 @@ export default function ComposePage() {
             </p>
           ) : (
             <p className="text-[11px] text-gray-400">
-              {messages.toLocaleString()} messages in one unbroken run (~{avgDelaySec}s apart). You
-              can still pause it at any moment from the campaign card.
+              {messages.toLocaleString()} message{messages === 1 ? '' : 's'} in one unbroken run (~
+              {avgDelaySec}s apart). You can still pause it at any moment from the campaign card.
             </p>
           )}
           {/* the finish moment on its own, bold — separate from the how

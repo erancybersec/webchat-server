@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeDaysLabel,
   batchSummary,
   clockLabel,
   coldCapCaveat,
@@ -203,6 +204,20 @@ describe('pacing read-back in Compose', () => {
       '20–40m apart',
     );
   });
+
+  it('names the active days on their own when there is no hour window', () => {
+    expect(batchSummary({ pauseMin: 0, activeDays: [0, 3] }, 100, 2, NOW)).toContain('on Sun, Wed');
+  });
+
+  it('names the active days alongside the hour window when both are set', () => {
+    const summary = batchSummary(
+      { pauseMin: 0, pauseAt: '21:00', resumeAt: '09:00', activeDays: [1, 3, 5] },
+      1000,
+      2,
+      NOW,
+    );
+    expect(summary).toContain('sends until 21:00, then continues at 09:00, on Mon, Wed, Fri');
+  });
 });
 
 describe('estimateFinish', () => {
@@ -241,6 +256,40 @@ describe('estimateFinish', () => {
     const ranged = estimateFinish({ size: 50, pauseMin: 20, pauseMinMax: 40 }, 1000, 2, NOW);
     const midpoint = estimateFinish({ size: 50, pauseMin: 30 }, 1000, 2, NOW);
     expect(ranged!.totalMinutes).toBeCloseTo(midpoint!.totalMinutes, 5);
+  });
+
+  it('a day gate alone (no hour window) still paces a big send, one day at a time', () => {
+    const otherDay = (NOW.getDay() + 2) % 7;
+    const est = estimateFinish({ pauseMin: 0, activeDays: [otherDay] }, 5, 2, NOW);
+    expect(est).not.toBeNull();
+    expect(est!.finishAt.getDay()).toBe(otherDay);
+  });
+
+  it("a per-day override, not the rule's own hours, decides today's cutoff", () => {
+    const today = NOW.getDay();
+    const est = estimateFinish(
+      {
+        pauseMin: 0,
+        pauseAt: '23:00', // ignored today — the override below wins
+        resumeAt: '09:00',
+        activeDays: [today],
+        dayHours: { [today]: { pauseAt: '10:00', resumeAt: '10:30' } },
+      },
+      1000,
+      2,
+      NOW, // NOW is 10:00 — right at the override's cutoff
+    );
+    expect(est).not.toBeNull();
+    // must roll into the override's resumeAt, not the rule's own 09:00/23:00
+    expect(est!.finishAt.getTime()).toBeGreaterThanOrEqual(
+      new Date(2026, 7, 23, 10, 30, 0).getTime(),
+    );
+  });
+});
+
+describe('activeDaysLabel', () => {
+  it('lists days in calendar order regardless of input order', () => {
+    expect(activeDaysLabel([4, 0, 2])).toBe('Sun, Tue, Thu');
   });
 });
 

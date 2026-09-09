@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/index.js';
-import { inQuietHours, nextClockTime } from './time.js';
+import { dayWindow, inQuietHours, isActiveDay, nextActiveMoment, nextClockTime } from './time.js';
 import type {
   BatchRule,
   CampaignProgress,
@@ -25,7 +25,11 @@ import type {
  *
  * The window is checked continuously (not just at batch boundaries) via
  * `capByWindow`, so a window-only rule (no batch size at all) still stops the
- * simulated clock at the cutoff instead of running straight through it.
+ * simulated clock at the cutoff instead of running straight through it. A
+ * day-of-week gate (`activeDays`) is checked the same way — the simulated
+ * clock jumps clean over any day it isn't allowed to run — and a per-day
+ * `dayHours` override is read fresh every time the simulated clock crosses
+ * into a new day.
  */
 export function estimatePendingMinutes(
   pending: number,
@@ -35,13 +39,15 @@ export function estimatePendingMinutes(
 ): number | null {
   if (pending <= 0 || !ratePerMin) return null;
   const hasBatch = !!batch?.size;
-  const hasWindow = !!batch?.pauseAt;
+  const hasDays = !!batch?.activeDays?.length;
+  // a day gate alone still paces "when", even with no hour window at all
+  const hasWindow = !!batch?.pauseAt || hasDays;
   if (hasBatch && batch!.pauseMin === 0) return null; // a manual batch wait is ahead
-  if (hasWindow && !batch!.resumeAt) return null; // a manual window wait is ahead
+  // without day gating this is a plain "no auto-resume" verdict; with it, a
+  // later active day might still carry its own resumeAt, so the loop decides
+  if (!hasDays && hasWindow && !batch!.resumeAt) return null;
   if (!hasBatch && !hasWindow) return pending / ratePerMin;
 
-  const pauseAt = batch!.pauseAt;
-  const resumeAt = batch!.resumeAt;
   // a ranged wait's expected cost, for an estimate — the run itself rolls fresh
   const waitPerBoundaryMin = hasBatch
     ? batch!.pauseMinMax && batch!.pauseMinMax > batch!.pauseMin
@@ -55,14 +61,35 @@ export function estimatePendingMinutes(
   let sinceBoundary = 0; // wire attempts since the last batch boundary/window resume
   let guard = 0; // a pathological rule (e.g. a window that never opens) must not hang
   while (remaining > 0 && guard++ < 100_000) {
-    if (hasWindow && inQuietHours(new Date(cursor), pauseAt!, resumeAt!)) {
+    const cursorDate = new Date(cursor);
+    if (hasDays && !isActiveDay(batch!.activeDays, cursorDate)) {
+      const next = nextActiveMoment(batch, cursorDate);
+      if (!next) return null; // the next active day's window needs a human Continue
+      cursor = next.getTime();
+      sinceBoundary = 0;
+      continue;
+    }
+    const win = hasDays ? dayWindow(batch, cursorDate) : { pauseAt: batch?.pauseAt, resumeAt: batch?.resumeAt };
+    if (win.pauseAt && !win.resumeAt) return null; // today's window has no auto-resume
+    if (win.pauseAt && inQuietHours(cursorDate, win.pauseAt, win.resumeAt!)) {
       // a fresh run starts counting its own batch from zero, exactly as a real
       // resume after a window pause is a new runJob() call
-      cursor = nextClockTime(new Date(cursor), resumeAt!).getTime();
+      cursor = nextClockTime(cursorDate, win.resumeAt!).getTime();
       sinceBoundary = 0;
+      continue;
     }
-    const windowEnd = hasWindow ? nextClockTime(new Date(cursor), pauseAt!).getTime() : Infinity;
-    const capByWindow = hasWindow ? Math.max(0, Math.floor((windowEnd - cursor) / msPerMsg)) : Infinity;
+    // a day gate with no hour window still can't run straight through
+    // midnight — the next calendar day might not be an active one
+    let dayCloseMs = Infinity;
+    if (hasDays) {
+      const midnight = new Date(cursorDate);
+      midnight.setDate(midnight.getDate() + 1);
+      midnight.setHours(0, 0, 0, 0);
+      dayCloseMs = midnight.getTime();
+    }
+    const windowEnd = win.pauseAt ? nextClockTime(cursorDate, win.pauseAt).getTime() : dayCloseMs;
+    const capByWindow =
+      win.pauseAt || hasDays ? Math.max(0, Math.floor((windowEnd - cursor) / msPerMsg)) : Infinity;
     const capByBatch = hasBatch ? batch!.size! - sinceBoundary : Infinity;
     const chunk = Math.min(remaining, capByWindow, capByBatch);
     if (chunk <= 0) {
@@ -172,10 +199,14 @@ function parseBatch(raw: string | null): BatchRule | null {
   if (!raw) return null;
   try {
     const b = JSON.parse(raw) as BatchRule;
-    // a rule is meaningful with a batch size, a clock cutoff, a per-compose
-    // cold-cap override, a per-compose delay override, or any combination
+    // a rule is meaningful with a batch size, a clock cutoff, a day-of-week
+    // gate, a per-compose cold-cap override, a per-compose delay override, or
+    // any combination
     const sized = Number.isFinite(b?.size) && (b.size as number) > 0;
-    return b && (sized || typeof b.pauseAt === 'string' || !!b.coldCap || !!b.delay) ? b : null;
+    return b &&
+      (sized || typeof b.pauseAt === 'string' || !!b.activeDays?.length || !!b.coldCap || !!b.delay)
+      ? b
+      : null;
   } catch {
     return null;
   }

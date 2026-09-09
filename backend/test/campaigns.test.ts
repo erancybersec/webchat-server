@@ -453,6 +453,47 @@ describe('campaign control (batching, pause, continue)', () => {
     expect(withRange).toBeCloseTo(withMidpoint!, 5);
   });
 
+  it("a per-day hour override, not the rule's own pauseAt, decides when a day-limited campaign stops", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date(2026, 7, 19, 20, 59, 30);
+    vi.setSystemTime(start);
+    const today = start.getDay();
+    jobs.upsert({
+      id: 'j1',
+      scheduledAt: new Date(start.getTime() - 60_000).toISOString(),
+      recipients: five,
+      items: [textItem],
+      batch: {
+        pauseMin: 0,
+        pauseAt: '23:00', // the rule's own hours — ignored today, in favor of the override
+        resumeAt: '09:00',
+        activeDays: [today],
+        dayHours: { [today]: { pauseAt: '21:00', resumeAt: '09:00' } },
+      },
+    });
+    const call = evo.call.bind(evo);
+    vi.spyOn(evo, 'call').mockImplementation(async (endpoint, body, method) => {
+      const res = await call(endpoint, body, method);
+      vi.setSystemTime(new Date(2026, 7, 19, 21, 0, 5));
+      return res;
+    });
+
+    await scheduler.tick();
+    const job = jobs.byId('j1')!;
+    expect(job.status).toBe('pending'); // re-queued (has a resumeAt), not held for a human
+    expect(job.result).toContain('reached 21:00'); // the override's hour, not the rule's own 23:00
+  });
+
+  it('estimatePendingMinutes skips a day the campaign is not allowed on', () => {
+    // 3 messages at 30/min would normally finish in seconds; limited to a day
+    // that isn't today, the estimate must jump to that day instead.
+    const now = new Date(2026, 7, 19, 10, 0, 0);
+    const otherDay = (now.getDay() + 2) % 7;
+    const gated = estimatePendingMinutes(3, 30, { pauseMin: 0, activeDays: [otherDay] }, now);
+    expect(gated).not.toBeNull();
+    expect(gated!).toBeGreaterThan(60); // hours away, not seconds
+  });
+
   it('keeps a multi-message sequence whole at a batch boundary', async () => {
     // batch of 1 with a 2-message sequence: the boundary must not leave anyone
     // holding half a conversation until the pause ends
