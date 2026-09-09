@@ -554,6 +554,12 @@ describe('campaign control (batching, pause, continue)', () => {
   });
 
   it('a recurring campaign keeps its pacing on the next occurrence', async () => {
+    // well inside the window's own live hours — a run starting past pauseAt
+    // now correctly sends nothing (see the overshoot regression test below),
+    // which would leave this send never happening and no next occurrence rolled
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const daytime = new Date(2026, 7, 19, 14, 0, 0);
+    vi.setSystemTime(daytime);
     const paced = new Scheduler(
       jobs,
       new Sender(evo, new BlacklistStore(db)),
@@ -562,7 +568,7 @@ describe('campaign control (batching, pause, continue)', () => {
     );
     jobs.upsert({
       id: 'j1',
-      scheduledAt: PAST,
+      scheduledAt: new Date(daytime.getTime() - 60_000).toISOString(),
       recipients: [r('972521111111')],
       items: [textItem],
       repeat: { freq: 'weekly' },

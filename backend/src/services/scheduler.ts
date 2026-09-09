@@ -332,11 +332,33 @@ export class Scheduler {
         why: 'not an active day for this campaign',
       };
     }
-    // 'pause at HH:MM' — fixed for this run, so a run always has room to work
-    // and a manual Continue past the cutoff isn't instantly re-stopped. Reads
-    // TODAY's effective hours — a per-day override in dayHours, or the rule's
-    // own pauseAt when today has none.
+    // TODAY's effective hours — a per-day override in dayHours, or the
+    // rule's own pauseAt when today has none.
     const todayWindow = dayWindow(batch, new Date());
+    // A run starting ALREADY inside the window's quiet hours — most often an
+    // automatic batch-boundary resume whose random wait (pauseMin..pauseMinMax)
+    // happened to land past pauseAt, with no idea the window even exists —
+    // must not get a free pass to send until TOMORROW's cutoff just because
+    // nextClockTime() rolls forward past an already-missed pauseAt. Caught a
+    // real campaign sending at 21:54 against a 21:00 pauseAt this way. Only a
+    // resumeAt-bounded window can even define "quiet hours"; a manual-only
+    // window (no resumeAt) can only be resumed by a human clicking Continue,
+    // which is the deliberate override the leniency below exists for.
+    if (
+      !interrupted &&
+      todayWindow.pauseAt &&
+      todayWindow.resumeAt &&
+      inQuietHours(new Date(), todayWindow.pauseAt, todayWindow.resumeAt)
+    ) {
+      interrupted = {
+        at: batch?.activeDays?.length
+          ? nextActiveMoment(batch, new Date())
+          : nextClockTime(new Date(), todayWindow.resumeAt),
+        why: `reached ${todayWindow.pauseAt}`,
+      };
+    }
+    // 'pause at HH:MM' — fixed for this run, so a run always has room to work
+    // and a manual Continue past the cutoff isn't instantly re-stopped.
     const cutoff = !interrupted && todayWindow.pauseAt ? nextClockTime(new Date(), todayWindow.pauseAt) : null;
 
     // {{name}} personalization source — recipient display names from Compose

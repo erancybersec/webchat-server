@@ -413,6 +413,54 @@ describe('Scheduler', () => {
     });
   });
 
+  describe('a run starting already past the sending window', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('sends nothing when a batch-boundary resume overshoots into quiet hours (regression: sent at 21:54 against a 21:00 pauseAt)', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      // the job's own auto-resume timer (batch pauseMin + jitter) fired at
+      // 21:54 — already inside its own 21:00–09:00 window — with no idea the
+      // window exists at all; runJob() must not grant it a free pass to send
+      // until tomorrow's cutoff just because nextClockTime(21:54, '21:00')
+      // rolls forward a full day.
+      const overshoot = new Date(2026, 7, 19, 21, 54, 0);
+      vi.setSystemTime(overshoot);
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: new Date(overshoot.getTime() - 60_000).toISOString(),
+        recipients: [r('972521111111'), r('972522222222')],
+        items: [textItem],
+        batch: { pauseMin: 270, pauseAt: '21:00', resumeAt: '09:00' },
+      });
+      await scheduler.tick();
+
+      expect(evo.calls).toHaveLength(0); // nothing went out
+      const job = jobs.byId('j1')!;
+      expect(job.status).toBe('pending'); // re-queued, not held for a human
+      expect(job.result).toContain('reached 21:00');
+      const next = new Date(job.scheduledAt);
+      expect(next.getHours()).toBe(9); // tomorrow's resumeAt, not "now + room"
+      expect(next.getTime()).toBeGreaterThan(overshoot.getTime());
+    });
+
+    it('still sends normally when the run starts inside the live window', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const insideWindow = new Date(2026, 7, 19, 14, 0, 0); // well before 21:00
+      vi.setSystemTime(insideWindow);
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: new Date(insideWindow.getTime() - 60_000).toISOString(),
+        recipients: [r('972521111111')],
+        items: [textItem],
+        batch: { pauseMin: 0, pauseAt: '21:00', resumeAt: '09:00' },
+      });
+      await scheduler.tick();
+
+      expect(evo.sentTo()).toEqual(['972521111111']);
+      expect(jobs.byId('j1')!.status).toBe('done');
+    });
+  });
+
   describe('sendOneNow', () => {
     it('sends only the one recipient their next owed item, personalized, without touching anyone else', async () => {
       jobs.upsert({
