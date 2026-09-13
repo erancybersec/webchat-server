@@ -479,22 +479,43 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
   // them as one block of "date/time - who: text" lines.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  function toggleSelected(id: string) {
+  // anchor for shift-click range selection (WhatsApp-style: shift+click extends
+  // the selection from the last clicked message to the one just clicked)
+  const selectAnchorId = useRef<string | null>(null);
+  function toggleSelected(id: string, shiftKey = false) {
+    if (shiftKey && selectAnchorId.current) {
+      const ids = visible.map((m) => m.id);
+      const a = ids.indexOf(selectAnchorId.current);
+      const b = ids.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const rid of ids.slice(lo, hi + 1)) next.add(rid);
+          return next;
+        });
+        selectAnchorId.current = id;
+        return;
+      }
+    }
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+    selectAnchorId.current = id;
   }
   function exitSelectMode() {
     setSelectMode(false);
     setSelectedIds(new Set());
+    selectAnchorId.current = null;
   }
   /** right-click "Select" on a message: enter select mode with just that one checked */
   function startSelectingFrom(id: string) {
     setSelectMode(true);
     setSelectedIds(new Set([id]));
+    selectAnchorId.current = id;
   }
   const [blocked, setBlocked] = useState(false);
   // is this contact on the send-time blacklist? (shared cache with Compose)
@@ -1637,14 +1658,17 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
                 className={`flex items-center gap-2 transition-shadow ${
                   m.id === currentMatch || m.id === flashId ? 'rounded-lg ring-2 ring-amber-400' : ''
                 } ${selectMode ? 'cursor-pointer' : ''}`}
-                onClick={selectMode ? () => toggleSelected(m.id) : undefined}
+                onClick={selectMode ? (e) => toggleSelected(m.id, e.shiftKey) : undefined}
               >
                 {selectMode && (
                   <input
                     type="checkbox"
                     checked={selectedIds.has(m.id)}
-                    onChange={() => toggleSelected(m.id)}
-                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => {}}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelected(m.id, e.shiftKey);
+                    }}
                     aria-label="Select message"
                     className="h-4 w-4 shrink-0 accent-wa"
                   />
