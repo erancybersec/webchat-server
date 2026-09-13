@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import type { ChatMeta, Me } from '../types';
 import { api } from './api';
@@ -16,6 +16,58 @@ const MESSAGE_EVENTS = ['MESSAGES_UPSERT', 'messages.upsert', 'MESSAGES_UPDATE',
 const CHAT_EVENTS = ['CHATS_UPSERT', 'chats.upsert', 'CHATS_UPDATE', 'chats.update', 'CHAT_READ'] as const;
 const PRESENCE_EVENTS = ['PRESENCE_UPDATE', 'presence.update'] as const;
 const PRESENCE_TTL_MS = 10_000;
+// Chat-list refreshes are throttled. `/api/chats` proxies Evolution's most
+// expensive query (findChats), and an event burst — a busy group, a campaign's
+// acks — used to fire one invalidation per event. Because an invalidation
+// cancels the running fetch without aborting its HTTP request, every one of
+// them opened ANOTHER /api/chats round-trip on top of the ones still in flight:
+// in prod one slow upstream became eight concurrent calls from a single tab.
+// At most one refresh per window now, and never a second while one is running.
+const CHATS_REFRESH_MS = 3_000;
+
+/**
+ * Throttle state per query client — module-level so every caller shares ONE
+ * window. Two components throttling separately would just stack their bursts,
+ * which is the bug this exists to prevent. Keyed by client (a WeakMap, so a
+ * discarded client's state goes with it) rather than held in a ref, since the
+ * callers are in different components.
+ */
+const chatsThrottle = new WeakMap<QueryClient, { timer: ReturnType<typeof setTimeout> | null; pending: boolean }>();
+
+/**
+ * Refresh the chat list, coalescing bursts. A fetch already running may have
+ * started before the change that prompted this call, so it can't stand in for
+ * it — we mark the refresh pending and let the window's trailing edge issue it
+ * once the line is free, instead of stacking a second concurrent request.
+ *
+ * Every event- or message-driven chat-list refresh must go through here. A
+ * direct `invalidateQueries({queryKey:['chats']})` re-opens the storm: it
+ * defaults to cancelRefetch, which abandons the in-flight fetch's promise
+ * WITHOUT aborting its HTTP request, so each one adds a concurrent
+ * /api/chats round-trip. Explicit one-shot user actions (archive, mark
+ * unread) are bounded by the click and may still invalidate directly.
+ */
+export function refreshChats(qc: QueryClient): void {
+  let state = chatsThrottle.get(qc);
+  if (!state) {
+    state = { timer: null, pending: false };
+    chatsThrottle.set(qc, state);
+  }
+  const s = state;
+  if (s.timer) {
+    s.pending = true;
+    return;
+  }
+  if (qc.getQueryState(['chats'])?.fetchStatus === 'fetching') s.pending = true;
+  else void qc.invalidateQueries({ queryKey: ['chats'] }, { cancelRefetch: false });
+  s.timer = setTimeout(() => {
+    s.timer = null;
+    if (s.pending) {
+      s.pending = false;
+      refreshChats(qc);
+    }
+  }, CHATS_REFRESH_MS);
+}
 
 /**
  * Evolution's envelope ({instance, data}) → record list. Mirrors the
@@ -79,7 +131,7 @@ export function useEvents(): PresenceMap {
   useBusEvent(MESSAGE_EVENTS, (data: any) => {
     const { instance, records } = unwrapClient(data);
     if (foreign(instance)) return;
-    void qc.invalidateQueries({ queryKey: ['chats'] });
+    refreshChats(qc);
     // records live under @lid or phone JIDs interchangeably while the open
     // thread is keyed by the dedup winner — keying the invalidation on the
     // record's JID misses it, so refresh every mounted messages query
@@ -115,7 +167,7 @@ export function useEvents(): PresenceMap {
 
   useBusEvent(CHAT_EVENTS, (data: any) => {
     if (foreign(unwrapClient(data).instance)) return;
-    void qc.invalidateQueries({ queryKey: ['chats'] });
+    refreshChats(qc);
   });
 
   useBusEvent(PRESENCE_EVENTS, (data: any) => {

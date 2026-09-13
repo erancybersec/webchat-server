@@ -86,6 +86,35 @@ describe('chat gateway', () => {
     expect(t.evo.calls[0]).toMatchObject({ endpoint: '/chat/findChats/Test' });
   });
 
+  it('coalesces concurrent GET /api/chats into a single findChats call', async () => {
+    // findChats is the expensive upstream query; callers arriving while one is
+    // already running must share it instead of each starting another.
+    const orig = t.evo.call.bind(t.evo);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    t.evo.call = async (endpoint: string, body?: unknown, method = 'POST') => {
+      if (endpoint.startsWith('/chat/findChats/')) await gate;
+      return orig(endpoint, body, method);
+    };
+    const findCalls = () => t.evo.calls.filter((c) => c.endpoint.startsWith('/chat/findChats/'));
+
+    const both = Promise.all([
+      t.app.inject({ method: 'GET', url: '/api/chats' }),
+      t.app.inject({ method: 'GET', url: '/api/chats' }),
+    ]);
+    await new Promise((r) => setTimeout(r, 25));
+    release();
+    const [a, b] = await both;
+    expect(a.statusCode).toBe(201);
+    expect(b.statusCode).toBe(201);
+    expect(a.body).toBe(b.body);
+    expect(findCalls()).toHaveLength(1);
+
+    // once it has settled, the next request goes upstream again (no caching)
+    await t.app.inject({ method: 'GET', url: '/api/chats' });
+    expect(findCalls()).toHaveLength(2);
+  });
+
   it('GET /api/contacts proxies findContacts', async () => {
     await t.app.inject({ method: 'GET', url: '/api/contacts' });
     expect(t.evo.calls[0]).toMatchObject({ endpoint: '/chat/findContacts/Test' });

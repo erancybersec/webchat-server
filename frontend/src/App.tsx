@@ -407,7 +407,18 @@ function App() {
     navigator.serviceWorker?.addEventListener('message', onMsg);
     return () => navigator.serviceWorker?.removeEventListener('message', onMsg);
   }, [applyTarget]);
-  const chats = useQuery({ queryKey: ['chats'], queryFn: api.chats.list, staleTime: 20_000 });
+  // Freshness floor for the whole app: live updates arrive over SSE, so this
+  // is not the primary path — but the chat list has no other periodic refresh
+  // (focus refetching is off), so a dropped SSE event or a missed invalidation
+  // would otherwise leave the list stale indefinitely. App is always mounted,
+  // so one slow poll here covers every consumer of ['chats']; concurrent tabs
+  // collapse into a single upstream call server-side.
+  const chats = useQuery({
+    queryKey: ['chats'],
+    queryFn: api.chats.list,
+    staleTime: 20_000,
+    refetchInterval: 60_000,
+  });
   useSyncExternalStore(subscribeReadMarks, readMarksVersion); // re-render on read-mark changes
   const unreadTotal = (Array.isArray(chats.data) ? chats.data : []).reduce(
     (sum: number, c: any) =>

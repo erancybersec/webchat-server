@@ -701,13 +701,36 @@ export function registerGateway(
     return encodeURIComponent(i);
   };
 
+  /**
+   * findChats is by far Evolution's most expensive query on this deployment (a
+   * DISTINCT ON over a JSONB expression, joined across Message/Chat/Contact),
+   * and a shared inbox means several agents' tabs ask for the same line at the
+   * same time. When it turns slow, every extra caller is another concurrent
+   * copy of that query — the amplification that took the whole Evolution host
+   * down on 2026-09-13. Callers arriving while a call for the same line is
+   * already running share its response instead; the per-request unread
+   * enrichment still runs on top, so nobody gets another agent's view.
+   */
+  const chatsInFlight = new Map<string, Promise<EvoResponse>>();
+  const findChats = (raw: string): Promise<EvoResponse> => {
+    // Keyed on the upstream endpoint, not the bare instance name: should this
+    // route ever gain a parameter, the key changes with it instead of silently
+    // serving one caller's response to another asking for something else.
+    const endpoint = `/chat/findChats/${encodeURIComponent(raw)}`;
+    const running = chatsInFlight.get(endpoint);
+    if (running) return running;
+    const call = evo.call(endpoint, {}).finally(() => chatsInFlight.delete(endpoint));
+    chatsInFlight.set(endpoint, call);
+    return call;
+  };
+
   // Conversation list. Enriched with the shared unread state — Evolution's own
   // unreadCount is unreliable here, so a tracked chat's badge is the team's
   // (server-side) truth instead.
   app.get('/api/chats', async (req, reply) => {
     const raw = access.resolve(req);
     if (raw == null) return reply.code(403).send({ error: 'instance not allowed' });
-    const res = await evo.call(`/chat/findChats/${encodeURIComponent(raw)}`, {});
+    const res = await findChats(raw);
     return mirror(reply, chatUnread ? enrichChats(res, chatUnread, raw) : res);
   });
 

@@ -45,7 +45,7 @@ import { applyLocalDeletes, buildOptimistic, matchReconciled, mergePending, reco
 import { normalizePhone, phoneKey } from '../lib/phone';
 import { fillAgentName, useQuickReplies } from '../lib/quickReplies';
 import QuickRepliesModal from './chat/QuickRepliesModal';
-import { useEvents } from '../lib/useEvents';
+import { refreshChats, useEvents } from '../lib/useEvents';
 import { usePendingRecipientKeys } from '../lib/usePendingRecipients';
 import { fileToBase64, VoiceRecorder } from '../lib/voice';
 import type { Job } from '../types';
@@ -699,7 +699,9 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
     // loaded messages needs a read receipt (Evolution's count can be stale)
     if (conv.unreadCount > 0) {
       setReadMark(jid, conv.lastMsgTimestamp);
-      void qc.invalidateQueries({ queryKey: ['chats'] });
+      // throttled: this effect re-runs on every messages refetch, so during an
+      // event burst it used to fire one /api/chats round-trip per message
+      refreshChats(qc);
     }
     const unread = serverRecords.filter(
       (m) => !m.fromMe && m.status !== 'READ' && m.status !== 'PLAYED' && m.type !== 'reaction',
@@ -713,7 +715,9 @@ function Thread({ conv, convs, names, aliases, presence, jumpTo, onBack, onArchi
         // Evolution's findChats unreadCount stays stale after this call —
         // remember locally how far we've read so the badge actually clears
         setReadMark(jid, conv.lastMsgTimestamp);
-        return qc.invalidateQueries({ queryKey: ['chats'] });
+        // also throttled — one markRead lands per incoming message, so a burst
+        // would otherwise stack a chats round-trip behind each receipt
+        refreshChats(qc);
       })
       .catch(() => {});
   }, [serverRecords, jid, conv.lastMsgTimestamp, conv.unreadCount, qc]);
