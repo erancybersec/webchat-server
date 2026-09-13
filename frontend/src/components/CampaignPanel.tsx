@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { clockLabel, pauseLabel, progressLine, waitingLabel } from '../lib/campaign';
+import { batchProgressLabel, clockLabel, pauseLabel, progressLine, waitingLabel } from '../lib/campaign';
 import type { CampaignProgress, Job, JobProgress } from '../types';
 
 /** Statuses where the ledger is still moving (or about to) — poll while so. */
@@ -55,7 +55,14 @@ export default function CampaignPanel({
   // landed a second ago — everything structural still comes from the ledger
   const shown: CampaignProgress =
     live && !live.done && live.total === p.total && live.sent + live.skipped + live.failed > p.sent + p.skipped + p.failed
-      ? { ...p, sent: live.sent, skipped: live.skipped, failed: live.failed, pending: live.pending ?? p.pending }
+      ? {
+          ...p,
+          sent: live.sent,
+          skipped: live.skipped,
+          failed: live.failed,
+          pending: live.pending ?? p.pending,
+          batchSent: live.batchSent ?? p.batchSent,
+        }
       : p;
   if (shown.total === 0) return null;
 
@@ -101,8 +108,11 @@ export default function CampaignPanel({
           </span>
         )}
         {!!shown.batch?.size && (
-          <span className="rounded-full bg-gray-100 px-1.5 py-0.5">
-            ⏱ {shown.batch.size} per batch
+          <span
+            title="Resets at each batch boundary; survives a server restart mid-batch"
+            className="rounded-full bg-gray-100 px-1.5 py-0.5"
+          >
+            ⏱ {batchProgressLabel(shown)}
             {shown.batch.pauseMin > 0 ? ` · ${pauseLabel(shown.batch)} apart` : ' · manual'}
           </span>
         )}

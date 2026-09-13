@@ -775,4 +775,15 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_outbound_sends_sent_at ON outbound_sends(sent_at);
     `,
   },
+  {
+    id: '027-job-batch-sent',
+    sql: `
+      -- Wire sends since the last batch boundary, written through on every
+      -- send (not just at shutdown, so a SIGKILL/deploy loses nothing). Was
+      -- an in-memory-only counter in scheduler.ts — a process restart mid-
+      -- campaign reset it to 0, so a resumed run sent up to a FULL fresh
+      -- batch on top of whatever was already sent in the interrupted one.
+      ALTER TABLE jobs ADD COLUMN batch_sent INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];

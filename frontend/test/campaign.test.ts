@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeDaysLabel,
+  batchProgressLabel,
   batchSummary,
   clockLabel,
   coldCapCaveat,
@@ -30,6 +31,7 @@ const progress = (over: Partial<CampaignProgress> = {}): CampaignProgress => ({
   nextRunAt: null,
   holdReason: null,
   contacts: { sent: 300, skipped: 10, failed: 2, pending: 731 },
+  batchSent: null,
   ...over,
 });
 
@@ -129,6 +131,31 @@ describe('what it is waiting for', () => {
     // a batch pause already in the past is not something to announce
     const past = new Date(Date.now() - 60_000).toISOString();
     expect(waitingLabel(progress({ status: 'pending', nextRunAt: past }))).toBe(null);
+  });
+});
+
+describe('batchProgressLabel', () => {
+  it('is null without a batch size — nothing to show', () => {
+    expect(batchProgressLabel(progress({ batch: null, batchSent: null }))).toBeNull();
+    expect(batchProgressLabel(progress({ batch: { pauseMin: 0, pauseAt: '21:00' }, batchSent: null }))).toBeNull();
+  });
+
+  it('formats how far into the current batch a running campaign is', () => {
+    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: 14 }))).toBe(
+      '14 of 30 this batch',
+    );
+  });
+
+  it('treats a missing count as 0, not a crash', () => {
+    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: null }))).toBe(
+      '0 of 30 this batch',
+    );
+  });
+
+  it('shows a mid-sequence overshoot honestly instead of clamping it', () => {
+    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: 31 }))).toBe(
+      '31 of 30 this batch',
+    );
   });
 });
 

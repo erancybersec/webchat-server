@@ -86,6 +86,8 @@ export interface Job {
   instance: string | null;
   /** Batch pacing; null = one unbroken run. */
   batch: BatchRule | null;
+  /** Wire sends since the last batch boundary; survives a restart. */
+  batchSent: number;
 }
 
 export type AgentRole = 'admin' | 'agent';
@@ -281,6 +283,8 @@ export interface JobProgress {
   nextRunAt?: string | null;
   /** Why it stopped short, in words the operator can act on. */
   holdReason?: string;
+  /** Wire sends since the last batch boundary; absent when unbatched. */
+  batchSent?: number;
 }
 
 /**
@@ -305,6 +309,8 @@ export interface CampaignProgress {
   ratePerMin: number | null;
   etaMinutes: number | null;
   batch: BatchRule | null;
+  /** Wire sends since the last batch boundary; null when there's no batch size. */
+  batchSent: number | null;
   nextRunAt: string | null;
   /** Why it stopped short — the cold-contact cap, a dead line, a batch boundary. */
   holdReason: string | null;

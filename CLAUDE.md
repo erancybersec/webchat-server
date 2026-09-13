@@ -85,7 +85,9 @@ the map:
 - **Campaign pause/resume/batching** (`jobs.batch` JSON column, `scheduler.ts`): a sending
   window (`pauseAt`/`resumeAt`) and/or batch pacing (`size` + `pauseMin`), both leaving the job
   `running` without finalizing — the same resume path crash recovery uses. A paused job can be
-  edited (same item count only; ledger rows key on item index).
+  edited (same item count only; ledger rows key on item index). The within-batch wire-attempt
+  count lives in `jobs.batch_sent`, written through on every send so it survives a restart mid-batch
+  (see ANTI-BAN.md §2) — an operator can also force it back to 0 via `POST /api/jobs/:id/reset-batch`.
 - **Blacklist**: enforced at one choke point, `services/sender.ts` (`Sender.sendOne`) —
   identical phone normalization on both sides. Groups are never blocked.
 - **Number verification** (`services/verification.ts`): a *cache*, separate table from the

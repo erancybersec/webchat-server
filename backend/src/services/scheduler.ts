@@ -96,6 +96,8 @@ export interface JobProgress {
   nextRunAt?: string | null;
   /** Why it stopped short, in words the operator can act on. */
   holdReason?: string;
+  /** Wire sends since the last batch boundary; absent when unbatched. */
+  batchSent?: number;
 }
 
 type Logger = (msg: string) => void;
@@ -319,10 +321,17 @@ export class Scheduler {
     // Campaign pacing. A batch is counted in WIRE ATTEMPTS: a blacklist skip
     // never sent anything, so it doesn't spend the batch.
     const batch = job.batch;
-    let wireSends = 0;
+    // Seeded from the persisted counter, not 0: a crash/restart re-pends a
+    // job that was mid-batch, and this run must finish THAT batch rather
+    // than start a fresh one (the bug a Sept 2026 mid-deploy restart hit —
+    // see ANTI-BAN.md). Meaningless (and left at 0) for an unbatched job.
+    let wireSends = batch?.size ? job.batchSent : 0;
     // set when the campaign steps out of this run without finishing:
-    // { at } = re-queue then, { at: null } = hold 'paused' for a human
-    let interrupted: { at: Date | null; why: string } | null = null;
+    // { at } = re-queue then, { at: null } = hold 'paused' for a human.
+    // resetBatch: false preserves the count across the interrupt (a
+    // disconnected line is closer to a crash than a real batch boundary —
+    // everything else defaults to resetting, matching pre-existing behavior).
+    let interrupted: { at: Date | null; why: string; resetBatch?: boolean } | null = null;
     let pausedByOperator = false;
     // Day-of-week gate, checked before this run even starts sending — today
     // might not be one of the days the campaign is allowed on.
@@ -387,6 +396,7 @@ export class Scheduler {
       skipped: initial.filter((s) => s.status === 'skipped').length,
       failed: 0, // 'failed' rows are retried below — counted when they exhaust
       done: false,
+      batchSent: batch?.size ? wireSends : undefined,
     };
     this.emit('JOB_PROGRESS', { ...progress });
 
@@ -457,6 +467,11 @@ export class Scheduler {
           break;
         }
         job = liveJob;
+        // An operator's manual "reset batch count" lands mid-run the same way
+        // an edit does. Only ever adopt a DECREASE — this write-through's own
+        // setBatchSent just ran ahead of the DB read that seeded liveJob, an
+        // increase here would be that race, not a real reset.
+        if (batch?.size && liveJob.batchSent < wireSends) wireSends = liveJob.batchSent;
         // The day rolled over mid-run (a long batch can cross midnight) into
         // one the campaign isn't allowed on.
         if (batch?.activeDays?.length && !isActiveDay(batch.activeDays, new Date())) {
@@ -498,7 +513,7 @@ export class Scheduler {
             open = null; // a failed health check is not evidence of a problem
           }
           if (open === false) {
-            interrupted = { at: null, why: 'the WhatsApp line is disconnected' };
+            interrupted = { at: null, why: 'the WhatsApp line is disconnected', resetBatch: false };
             break;
           }
           consecutiveFailures = 0;
@@ -573,14 +588,19 @@ export class Scheduler {
             progress.sent++;
           }
         }
-        this.emit('JOB_PROGRESS', { ...progress });
+        this.emit('JOB_PROGRESS', { ...progress, batchSent: batch?.size ? wireSends : undefined });
         // a batch is full — leave the rest for the next run. A multi-item
         // sequence is kept whole: stopping between a recipient's first and
         // second message would leave them with half a conversation until the
         // pause ends (possibly overnight), so the boundary waits for the next
         // recipient. Ledger rows are ordered by recipient, so "same recipient"
         // is just the next row.
-        if (paced) wireSends++;
+        if (paced) {
+          wireSends++;
+          // Write-through, not flush-on-exit: a send is 1-3s from the next, so
+          // this is cheap, and it's the only variant that survives a SIGKILL.
+          if (batch?.size) this.jobs.setBatchSent(job.id, wireSends);
+        }
         const midSequence = job.items.length > 1 && pending[i + 1]?.recipient === s.recipient;
         if (batch?.size && wireSends >= batch.size && !midSequence) {
           interrupted = {
@@ -622,8 +642,11 @@ export class Scheduler {
         // reason, and "Paused — paused" is worse than saying nothing.
         const holdReason = pausedByOperator ? '' : why;
         // an operator pause already moved the status; only the note is ours
+        // an operator pause preserves the batch count for free (setResult
+        // never touches it) — Continue then finishes the batch it was in,
+        // not a fresh one, matching Q1's decision.
         if (pausedByOperator) this.jobs.setResult(job.id, note, holdReason);
-        else this.jobs.interrupt(job.id, at, note, holdReason);
+        else this.jobs.interrupt(job.id, at, note, holdReason, interrupted!.resetBatch !== false);
         this.log(`[job ${job.id}] ${note}`);
         this.emit('JOB_PROGRESS', {
           ...progress,
@@ -632,6 +655,7 @@ export class Scheduler {
           status: at ? 'pending' : 'paused',
           nextRunAt: at ? at.toISOString() : null,
           holdReason,
+          batchSent: batch?.size ? wireSends : undefined,
         } satisfies JobProgress);
         return;
       }

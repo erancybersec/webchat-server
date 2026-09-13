@@ -432,6 +432,25 @@ export function registerJobs(
     return resumed;
   });
 
+  // Force the within-batch count back to 0 — the operator's manual fix for a
+  // batch pacing count that drifted, most often because a backend restart
+  // (a deploy) landed mid-batch: the run resumes from the ledger correctly,
+  // but the in-run pacing counter is gone, so without this the campaign would
+  // send up to a full fresh batch before its next pause. Allowed while
+  // 'running' on purpose — that's exactly the deploy scenario — the scheduler
+  // adopts a decrease to this counter on its very next send.
+  app.post('/api/jobs/:id/reset-batch', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const j = jobs.byId(id);
+    if (!j) return reply.code(404).send({ error: 'not found' });
+    if (!j.batch?.size)
+      return reply.code(409).send({ error: "this campaign isn't batched — nothing to reset" });
+    if (!instanceAllowed(req, j.instance))
+      return reply.code(403).send({ error: 'instance not allowed' });
+    jobs.resetBatchSent(id);
+    return jobs.byId(id);
+  });
+
   // Drop one recipient from a job's remaining work — the one-click "remove me
   // from this campaign" offered on a contact's own chat. Refused while the
   // job is literally mid-send (the scheduler already has its own ledger

@@ -10,8 +10,9 @@ Random gap (`delayMinMs`–`delayMaxMs`, default 1–3s) waited between real sen
 
 ## 2. Batching
 Batch size + pause between batches, with an optional randomized pause *range*.
-- [`backend/src/services/scheduler.ts:259-268,456-470`](backend/src/services/scheduler.ts) — batch boundary + wire-attempt counting
+- [`backend/src/services/scheduler.ts`](backend/src/services/scheduler.ts) — batch boundary + wire-attempt counting
 - A multi-item sequence to one recipient is never split across a batch boundary — nobody's left mid-conversation overnight.
+- The wire-attempt count (`jobs.batch_sent`) is **persisted**, not just kept in memory — a crash or a deploy restart mid-batch resumes finishing that batch instead of starting a fresh one (which would send up to a full extra batch in a burst). It resets at a real batch boundary, an operator's Pause/Continue preserves it, and a disconnected-line hold preserves it too (closer to a crash than a real boundary). An operator can also force it back to 0 with "Reset batch count" on the job row — meant for right after a restart, gated by the same per-line access as Pause/Resume.
 
 ## 3. Daily sending-hours window ("quiet hours")
 Default 21:00–08:00. An immediate "send now" job bypasses quiet hours only on its *first* run — a batch still running hours later no longer counts as "someone at the keyboard."

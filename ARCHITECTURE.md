@@ -45,6 +45,12 @@ base URL and API key exist exclusively on the server.
   `pauseMin` minutes or a human Continue). Both leave `running` without
   finalizing, which is the same resume path crash recovery already used. A
   campaign that has begun also respects quiet hours, even an immediate one.
+  The count toward the current batch (`jobs.batch_sent`, v2.58) is persisted
+  and written through on every send — a crash/restart mid-batch resumes
+  finishing that batch rather than starting a fresh one, which is what an
+  earlier in-memory-only counter did. It resets at a real batch boundary but
+  survives an operator's Pause/Continue and a disconnected-line hold; an
+  operator can also force it to 0 via `POST /api/jobs/:id/reset-batch`.
   `GET /api/jobs/:id/progress` reports counts/rate/ETA/next-run **from the
   ledger** (exact after a refresh or restart), and `GET /api/jobs/:id/sends/page`
   serves one filtered page of the per-recipient log — whose filter the CSV export

@@ -94,6 +94,9 @@ export interface Job {
   instance: string | null;
   /** Batch pacing / clock cutoff; null = send in one run (the default). */
   batch: BatchRule | null;
+  /** Wire sends since the last batch boundary — persisted so a crash/restart
+   *  resumes the batch it was mid-way through instead of starting a fresh one. */
+  batchSent: number;
 }
 
 /**
@@ -154,6 +157,8 @@ export interface CampaignProgress {
   ratePerMin: number | null;
   etaMinutes: number | null;
   batch: BatchRule | null;
+  /** Wire sends since the last batch boundary; null when `batch.size` is unset. */
+  batchSent: number | null;
   nextRunAt: string | null;
   /**
    * Why the campaign stopped short, in the scheduler's own words — the daily

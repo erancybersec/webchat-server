@@ -843,6 +843,30 @@ describe('campaign control API', () => {
       expect((await t.app.inject({ method: url.endsWith('progress') ? 'GET' : 'POST', url })).statusCode).toBe(404);
   });
 
+  it('reset-batch zeroes the counter, refuses on an unbatched job, and works while running', async () => {
+    const job = await runOneTick({ ...base, batch: { size: 1, pauseMin: 30 } });
+    // one recipient sent, batch of 1 already hit — re-queued 'pending'
+    expect(t.jobs.byId(job.id)!.batchSent).toBe(0); // the boundary itself already reset it
+    t.jobs.setBatchSent(job.id, 1); // simulate a restart landing mid-way through the NEXT batch
+
+    const reset = await post(`/api/jobs/${job.id}/reset-batch`);
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json().batchSent).toBe(0);
+
+    // no batch size on the job at all — nothing to reset
+    const unbatched = (await post('/api/jobs', base)).json();
+    expect((await post(`/api/jobs/${unbatched.id}/reset-batch`)).statusCode).toBe(409);
+
+    // unknown job
+    expect((await post('/api/jobs/nope/reset-batch')).statusCode).toBe(404);
+
+    // allowed while literally running — the deploy-restart scenario this exists for
+    t.db.prepare(`UPDATE jobs SET status='running', batch_sent=3 WHERE id=?`).run(job.id);
+    const resetWhileRunning = await post(`/api/jobs/${job.id}/reset-batch`);
+    expect(resetWhileRunning.statusCode).toBe(200);
+    expect(resetWhileRunning.json()).toMatchObject({ status: 'running', batchSent: 0 });
+  });
+
   it('remove-recipient drops one number and rejects a bad request the right way', async () => {
     const job = (await post('/api/jobs', base)).json();
 

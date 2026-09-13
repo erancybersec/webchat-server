@@ -169,6 +169,7 @@ interface JobRow {
   instance: string | null;
   batch: string | null;
   hold_reason: string | null;
+  batch_sent: number;
 }
 
 interface SendRow {
@@ -228,6 +229,7 @@ function rowToJob(r: JobRow): Job {
     sentBy: r.sent_by,
     instance: r.instance,
     batch: parseBatch(r.batch),
+    batchSent: r.batch_sent,
   };
 }
 
@@ -379,6 +381,7 @@ export class JobStore {
       // progress note on a job that is NOT finished (paused / between batches)
       setResult: db.prepare(`UPDATE jobs SET result=? WHERE id=?`),
       setHold: db.prepare(`UPDATE jobs SET hold_reason=? WHERE id=?`),
+      setBatchSent: db.prepare(`UPDATE jobs SET batch_sent=? WHERE id=?`),
       holdReason: db.prepare(`SELECT hold_reason AS why FROM jobs WHERE id=?`),
       del: db.prepare(`DELETE FROM jobs WHERE id=?`),
       clearDone: db.prepare(`DELETE FROM jobs WHERE status NOT IN ${LIVE_STATUSES}`),
@@ -687,7 +690,24 @@ export class JobStore {
   }
 
   finish(id: string, status: JobStatus, result: string): void {
-    this.q.finish.run({ id, status, result, now: new Date().toISOString() });
+    this.db.transaction(() => {
+      this.q.finish.run({ id, status, result, now: new Date().toISOString() });
+      // A finished job carries no live batch — the next occurrence (a
+      // clone/rerun) starts its own count from zero via the INSERT default.
+      this.q.setBatchSent.run(0, id);
+    })();
+  }
+
+  /** Wire sends since the last batch boundary — written through on every
+   *  send so it survives a crash/restart mid-batch. */
+  setBatchSent(id: string, n: number): void {
+    this.q.setBatchSent.run(n, id);
+  }
+
+  /** The operator's "reset batch count" control — forces the next batch to
+   *  start fresh, e.g. right after a restart landed mid-batch. */
+  resetBatchSent(id: string): void {
+    this.q.setBatchSent.run(0, id);
   }
 
   /** Release a held job. Returns false when it was no longer awaiting approval. */
@@ -718,13 +738,18 @@ export class JobStore {
    * when the pause is unattended, or 'paused' waiting for a human when it
    * isn't. Unsent ledger rows stay pending either way. `why` is the bare
    * reason the UI shows; `note` is the whole sentence, and the reason cannot be
-   * recovered from it (it has an em dash of its own).
+   * recovered from it (it has an em dash of its own). `resetBatch` (default
+   * true) zeroes the batch-sent counter — false for an interrupt that isn't
+   * really a batch boundary (a disconnected line is closer to a crash).
    */
-  interrupt(id: string, at: Date | null, note: string, why: string): void {
-    if (at) this.q.requeueAt.run({ id, at: at.toISOString() });
-    else this.q.holdPaused.run(id);
-    this.q.setResult.run(note, id);
-    this.q.setHold.run(why, id);
+  interrupt(id: string, at: Date | null, note: string, why: string, resetBatch = true): void {
+    this.db.transaction(() => {
+      if (at) this.q.requeueAt.run({ id, at: at.toISOString() });
+      else this.q.holdPaused.run(id);
+      this.q.setResult.run(note, id);
+      this.q.setHold.run(why, id);
+      if (resetBatch) this.q.setBatchSent.run(0, id);
+    })();
   }
 
   /**
@@ -934,6 +959,7 @@ export class JobStore {
       ratePerMin,
       etaMinutes,
       batch,
+      batchSent: batch?.size ? job.batchSent : null,
       // when an unattended batch pause is what's holding it, this is the moment
       // it picks back up; a 'paused' campaign waits for a human instead
       nextRunAt: job.status === 'pending' && job.startedAt ? job.scheduledAt : null,

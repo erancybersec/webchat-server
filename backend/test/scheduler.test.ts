@@ -461,6 +461,131 @@ describe('Scheduler', () => {
     });
   });
 
+  describe('batch-sent persistence', () => {
+    const five = [r('972521111111'), r('972522222222'), r('972523333333'), r('972524444444'), r('972525555555')];
+
+    it('a crash mid-batch resumes finishing THAT batch, not a fresh one', async () => {
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: five,
+        items: [textItem],
+        batch: { size: 4, pauseMin: 30 },
+      });
+      // the process dies after the 2nd send — before the batch of 4 is full
+      let sends = 0;
+      const origCall = evo.call.bind(evo);
+      evo.call = async (...args) => {
+        const res = await origCall(...args);
+        if (++sends === 2) void scheduler.stop();
+        return res;
+      };
+      await scheduler.tick();
+      evo.call = origCall;
+
+      expect(evo.calls).toHaveLength(2);
+      expect(jobs.byId('j1')!.status).toBe('running'); // not finalized — boot recovery re-pends it
+      expect(jobs.byId('j1')!.batchSent).toBe(2); // written through, not lost with the process
+
+      // reboot: recovery + a fresh Scheduler, fresh in-memory wireSends
+      expect(jobs.recoverInterrupted()).toBe(1);
+      const rebooted = new Scheduler(
+        jobs,
+        new Sender(evo, blacklist),
+        { pollMs: 60_000, delayMinMs: 0, delayMaxMs: 0, maxOverdueMin: 0, sendMaxAttempts: 3 },
+        () => {},
+      );
+      await rebooted.tick();
+
+      // WITHOUT the fix, wireSends re-seeds at 0 and this run sends the other
+      // 3 (finishing the whole job) instead of just 2 more to fill the batch.
+      expect(evo.calls).toHaveLength(4);
+      const job = jobs.byId('j1')!;
+      expect(job.status).toBe('pending'); // re-queued for the next batch, not done
+      expect(job.result).toContain('batch of 4 sent');
+      expect(job.result).toContain('4 of 5 done');
+      expect(jobs.allSends('j1').filter((s) => s.status === 'pending')).toHaveLength(1);
+      expect(job.batchSent).toBe(0); // the boundary itself resets it
+    });
+
+    it('writes through on every send, not just at shutdown', async () => {
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: five,
+        items: [textItem],
+        batch: { size: 10, pauseMin: 30 },
+      });
+      const seen: number[] = [];
+      const origCall = evo.call.bind(evo);
+      evo.call = async (...args) => {
+        const res = await origCall(...args);
+        seen.push(jobs.byId('j1')!.batchSent);
+        return res;
+      };
+      await scheduler.tick();
+      evo.call = origCall;
+
+      // captured just BEFORE each send's own write-through lands (the hook
+      // fires from inside sendOne, mid-send), so it's last-send's count each
+      // time — 0 before the 1st send counts, 4 before the 5th does.
+      expect(seen).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    it('a blacklist skip does not spend the batch', async () => {
+      blacklist.addMany([{ phone_number: '972521111111' }]);
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: [r('972521111111'), r('972522222222')],
+        items: [textItem],
+        batch: { size: 5, pauseMin: 30 },
+      });
+      // the job finishes in this one run (2 recipients, batch size never hit)
+      // and finish() zeroes batch_sent again — so the only way to see the
+      // in-flight count is to catch it mid-run, via the one real send's
+      // own write-through.
+      const spy = vi.spyOn(jobs, 'setBatchSent');
+      await scheduler.tick();
+      expect(jobs.byId('j1')!.status).toBe('done');
+      expect(spy).toHaveBeenCalledTimes(1); // one real send; the skip never calls it
+      expect(spy).toHaveBeenCalledWith('j1', 1);
+      expect(jobs.byId('j1')!.batchSent).toBe(0); // finish() resets it — job carries no live batch
+    });
+
+    it('a finished job carries no live batch', async () => {
+      jobs.upsert({
+        id: 'j1',
+        scheduledAt: PAST,
+        recipients: [r('972521111111')],
+        items: [textItem],
+        batch: { size: 5, pauseMin: 30 },
+      });
+      await scheduler.tick();
+      expect(jobs.byId('j1')!.status).toBe('done');
+      expect(jobs.byId('j1')!.batchSent).toBe(0);
+    });
+
+    it('a disconnected-line hold preserves the count — resetBatch:false on jobs.interrupt', () => {
+      // scheduler.ts wires the "the WhatsApp line is disconnected" interrupt
+      // with resetBatch:false (unlike every other interrupt reason, which
+      // resets); this pins JobStore's half of that contract directly, since
+      // reliably forcing the scheduler's own health-check timing in a test
+      // would be timing-brittle for no extra coverage.
+      jobs.upsert({ id: 'j1', scheduledAt: PAST, recipients: five, items: [textItem], batch: { size: 10, pauseMin: 30 } });
+      jobs.setStatus('j1', 'running');
+      jobs.setBatchSent('j1', 4);
+      jobs.interrupt('j1', null, '4 of 5 done, waiting for Continue', 'the WhatsApp line is disconnected', false);
+      expect(jobs.byId('j1')!.batchSent).toBe(4);
+      expect(jobs.byId('j1')!.status).toBe('paused');
+
+      // a real batch boundary, by contrast, resets it (the default)
+      jobs.setStatus('j1', 'running');
+      jobs.interrupt('j1', new Date(Date.now() + 60_000), 'batch of 10 sent', 'batch of 10 sent');
+      expect(jobs.byId('j1')!.batchSent).toBe(0);
+    });
+  });
+
   describe('sendOneNow', () => {
     it('sends only the one recipient their next owed item, personalized, without touching anyone else', async () => {
       jobs.upsert({

@@ -545,6 +545,14 @@ function JobRow({
     },
     onError: (e) => toast(String((e as Error).message), 'err'),
   });
+  const resetBatch = useMutation({
+    mutationFn: () => api.jobs.resetBatch(job.id),
+    onSuccess: () => {
+      refreshJob();
+      toast(`Batch count reset to 0 of ${job.batch?.size ?? 0}`);
+    },
+    onError: (e) => toast(String((e as Error).message), 'err'),
+  });
   const restore = useMutation({ mutationFn: () => api.jobs.restore(job.id), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: () => api.jobs.remove(job.id), onSuccess: invalidate });
   const rerun = useMutation({
@@ -596,6 +604,16 @@ function JobRow({
       danger: true,
     });
     if (ok) remove.mutate();
+  }
+
+  async function confirmResetBatch() {
+    const ok = await confirmDlg({
+      title: "Reset this batch's count?",
+      body: `The next batch will start from zero — up to ${job.batch?.size ?? 0} more messages go out before the next pause. Use this after a restart, not to send faster.`,
+      confirmLabel: 'Reset batch',
+      danger: true,
+    });
+    if (ok) resetBatch.mutate();
   }
 
   async function confirmResend() {
@@ -704,6 +722,21 @@ function JobRow({
       disabled: resume.isPending,
       solid: true,
       title: 'Pick up exactly where the ledger left off — nobody is messaged twice',
+    });
+  }
+  // A restart mid-batch loses the pacing counter's in-memory value (it's
+  // re-seeded from the persisted one, but that's stale for the batch a crash
+  // landed in) — this is the operator's manual fix. Offered any time there's
+  // a batch size and something's been counted toward it; allowed while
+  // 'running' on purpose, since that's exactly the post-restart scenario.
+  if (isCampaign(job) && !!job.batch?.size && job.batchSent > 0 && job.status !== 'cancelled' && !job.ranAt) {
+    actions.push({
+      key: 'reset-batch',
+      label: '↺ Reset batch count',
+      onClick: () => void confirmResetBatch(),
+      disabled: resetBatch.isPending,
+      color: 'blue',
+      title: `Currently ${job.batchSent} of ${job.batch.size} this batch`,
     });
   }
   // offered whenever the job reports failures and nothing is in flight. The

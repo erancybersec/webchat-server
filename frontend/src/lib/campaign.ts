@@ -120,6 +120,15 @@ export function pauseLabel(rule: BatchRule): string {
     : `${rule.pauseMin}m`;
 }
 
+/** "14 of 30 this batch" — how far into the current batch a running campaign
+ *  is. null when the campaign has no batch size at all (nothing to show). A
+ *  mid-sequence overshoot (the boundary waits for a recipient's last item) is
+ *  shown honestly rather than clamped — "31 of 30" is what actually happened. */
+export function batchProgressLabel(p: CampaignProgress): string | null {
+  if (!p.batch?.size) return null;
+  return `${p.batchSent ?? 0} of ${p.batch.size} this batch`;
+}
+
 function parseHHMM(v: string): number | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(v);
   if (!m) return null;

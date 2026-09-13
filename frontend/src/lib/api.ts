@@ -381,6 +381,9 @@ export const api = {
     retryFailed: (id: string) =>
       post<{ retried: number; job: Job }>(`/api/jobs/${encodeURIComponent(id)}/retry-failed`),
     resume: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/resume`),
+    // Force the within-batch count back to 0 — for a batch pacing count left
+    // stale by a backend restart mid-campaign (a deploy).
+    resetBatch: (id: string) => post<Job>(`/api/jobs/${encodeURIComponent(id)}/reset-batch`),
     // Drop one number from a job's remaining work — "remove me from this
     // campaign" from that contact's own chat. Sent rows are untouched.
     removeRecipient: (id: string, recipient: string) =>
