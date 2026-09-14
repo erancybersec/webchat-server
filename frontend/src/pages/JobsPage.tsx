@@ -6,7 +6,7 @@ import SequenceView from '../components/SequenceView';
 import { useToast } from '../components/Toast';
 import { agentBadgeClass, agentLabel, useAgents, useMe, usePerm } from '../lib/agents';
 import { api } from '../lib/api';
-import { clockLabel, isCampaign } from '../lib/campaign';
+import { canContinueNow, clockLabel, isCampaign } from '../lib/campaign';
 import { setComposeDraft } from '../lib/composeDraft';
 import { initialDensity, saveDensity, type Density } from '../lib/jobDensity';
 import { groupJobsByDay } from '../lib/groupJobsByDay';
@@ -21,7 +21,9 @@ const PAGE_SIZE = 50;
 const STATUS_STYLE: Record<JobStatus, string> = {
   pending_approval: 'bg-purple-100 text-purple-700',
   pending: 'bg-blue-100 text-blue-700',
-  running: 'bg-amber-100 text-amber-700',
+  // Actively sending is a healthy state, not a warning — the same calm
+  // green/brand treatment used elsewhere for "this is working as intended".
+  running: 'bg-green-50 text-wa-dark',
   paused: 'bg-indigo-100 text-indigo-700',
   done: 'bg-green-100 text-green-700',
   failed: 'bg-red-100 text-red-700',
@@ -32,8 +34,22 @@ const STATUS_STYLE: Record<JobStatus, string> = {
 /** Chip text — statuses read as labels ('pending_approval' would leak the enum). */
 const STATUS_LABEL: Partial<Record<JobStatus, string>> = {
   pending_approval: 'awaiting approval',
+  running: 'sending',
 };
 const statusLabel = (s: JobStatus): string => STATUS_LABEL[s] ?? s;
+/**
+ * The status pill's text for one job — 'running'/'paused' read the same as
+ * `statusLabel`, but 'pending' splits in two: a job that hasn't started yet is
+ * genuinely just scheduled, while one that already sent some and is holding
+ * before it continues (a batch pause, the sending window, a manual pause
+ * follow-up) reads as "Waiting" — the same word regardless of whether the
+ * hold is routine or needs attention; severity lives in the hold block, not
+ * this pill.
+ */
+function rowStatusLabel(job: Pick<Job, 'status' | 'startedAt'>): string {
+  if (job.status === 'pending' && job.startedAt) return 'waiting';
+  return statusLabel(job.status);
+}
 
 const ALL_STATUSES = Object.keys(STATUS_STYLE) as JobStatus[];
 const RESENDABLE: readonly JobStatus[] = ['done', 'failed', 'cancelled', 'missed'];
@@ -606,6 +622,16 @@ function JobRow({
     if (ok) remove.mutate();
   }
 
+  async function confirmStop() {
+    const ok = await confirmDlg({
+      title: 'Stop this campaign for good?',
+      body: `Whoever already received a message keeps it. The ${pendingCount.toLocaleString()} recipient${pendingCount === 1 ? '' : 's'} still to come won't be sent to, and this can't be resumed — reaching them again means starting a new send.`,
+      confirmLabel: 'Stop',
+      danger: true,
+    });
+    if (ok) cancel.mutate();
+  }
+
   async function confirmResetBatch() {
     const ok = await confirmDlg({
       title: "Reset this batch's count?",
@@ -640,6 +666,10 @@ function JobRow({
     progress?.failed ??
     Number(/(\d+) failed/.exec(job.result ?? '')?.[1] ?? 0);
   const pendingCount = ledger.data?.pending ?? progress?.pending ?? 0;
+  // The live event is fresher mid-run; the ledger is what a page load or a
+  // restart leaves behind. Whichever is fresher decides whether "Continue
+  // now" would do anything — see canContinueNow.
+  const holdReason = progress?.holdReason ?? ledger.data?.holdReason ?? null;
   // A 'failed'/'missed' job that stopped with untried ledger rows is, in every
   // way that matters, the same situation as a paused campaign — it just ended
   // up in History instead of Scheduled. Offer it the same in-place "Edit
@@ -713,7 +743,14 @@ function JobRow({
     job.status === 'paused' ||
     (job.status === 'cancelled' && !!job.startedAt) ||
     (['failed', 'missed'].includes(job.status) && !!job.startedAt && pendingCount > 0) ||
-    (job.status === 'pending' && !!job.startedAt && new Date(job.scheduledAt).getTime() > Date.now())
+    // The daily cold-contact cap is the one hold "Continue now" can't
+    // actually shortcut — the scheduler re-checks the same cap the instant
+    // the job wakes up, so offering the button would just spend a click on
+    // re-hitting today's limit and rescheduling for nothing.
+    (job.status === 'pending' &&
+      !!job.startedAt &&
+      new Date(job.scheduledAt).getTime() > Date.now() &&
+      canContinueNow(holdReason))
   ) {
     actions.push({
       key: 'resume',
@@ -793,7 +830,12 @@ function JobRow({
     actions.push({
       key: 'cancel',
       label: job.status === 'pending_approval' ? 'Withdraw' : job.startedAt ? 'Stop' : 'Cancel',
-      onClick: () => cancel.mutate(),
+      // A job that never started is trivially reversible — Restore brings it
+      // right back while its scheduled time is still ahead, so "Cancel" and
+      // "Withdraw" need no confirmation. "Stop" is the one that has already
+      // sent to some of the audience and can't be resumed: one wrong tap
+      // inside the overflow menu would otherwise end a live campaign outright.
+      onClick: job.startedAt ? () => void confirmStop() : () => cancel.mutate(),
       color: 'amber',
       title: job.startedAt ? 'Stop for good — what is already sent stays sent' : undefined,
     });
@@ -802,6 +844,21 @@ function JobRow({
     actions.push({ key: 'restore', label: 'Restore', onClick: () => restore.mutate(), color: 'blue' });
   }
   actions.push({ key: 'delete', label: 'Delete', onClick: () => void confirmDelete(), color: 'red' });
+
+  // A campaign card shows exactly one contextual primary action — the thing
+  // an operator actually needs right now (Pause while it's sending, Continue
+  // while it's held) — with everything else, destructive actions included,
+  // one tap away in the overflow menu. Density stays density for an ordinary
+  // job row; a big send always collapses to this shape regardless of it.
+  // 'resume' wins the one case both exist at once — a campaign already
+  // auto-resuming on its own (Waiting: 'pending' with startedAt) can also be
+  // hand-paused, but the operator's next move there is "Continue now", not
+  // "Pause"; Pause still works, one tap into the overflow.
+  const primaryKey = isCampaign(job)
+    ? (actions.find((a) => a.key === 'resume') ?? actions.find((a) => a.key === 'pause'))?.key ?? null
+    : null;
+  const primaryAction = primaryKey ? actions.find((a) => a.key === primaryKey)! : null;
+  const overflowActions = primaryKey ? actions.filter((a) => a.key !== primaryKey) : actions;
 
   return (
     <div
@@ -824,7 +881,7 @@ function JobRow({
             />
           )}
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${STATUS_STYLE[job.status]}`}>
-            {statusLabel(job.status)}
+            {rowStatusLabel(job)}
           </span>
           {scope === 'history' && (
             <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 capitalize">
@@ -881,7 +938,50 @@ function JobRow({
             {job.items.length} item{job.items.length === 1 ? '' : 's'}
           </span>
           <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          {density === 'compact' ? (
+          {isCampaign(job) ? (
+            // One contextual primary action (Pause / Continue / Continue now)
+            // plus everything else — including the destructive actions — in a
+            // single overflow menu, regardless of density: a big send is
+            // exactly the row where four peer buttons read as a control panel.
+            <>
+              {primaryAction && (
+                <button
+                  onClick={primaryAction.onClick}
+                  disabled={primaryAction.disabled}
+                  title={primaryAction.title}
+                  className={
+                    primaryAction.solid
+                      ? 'rounded bg-wa px-2.5 py-1 text-xs font-semibold text-white hover:bg-wa-dark disabled:opacity-50'
+                      : 'rounded border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                  }
+                >
+                  {primaryAction.label.replace(/^[⏸▶]\s*/, '')}
+                </button>
+              )}
+              <div ref={menuRef} className="relative">
+                <button
+                  onClick={() => setMenuOpen(!menuOpen)}
+                  aria-label="More actions"
+                  aria-expanded={menuOpen}
+                  className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-gray-500 hover:border-wa hover:text-wa-dark"
+                >
+                  ⋯
+                </button>
+                {menuOpen && (
+                  <div
+                    className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    {overflowActions.map((a) => (
+                      <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={menuItemClass(a)}>
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : density === 'compact' ? (
             <div ref={menuRef} className="relative">
               <button
                 onClick={() => setMenuOpen(!menuOpen)}
@@ -968,7 +1068,16 @@ function JobRow({
             </div>
           )
         )}
-        {job.result && <div className="px-3 pb-2 text-xs text-gray-500">{job.result}</div>}
+        {/* The server's result string does double duty: a finalize summary
+            ("230/230 sent") once a job is done, but also the raw mid-run
+            interrupt note while a campaign is still in play ("reached 21:00 —
+            152 of 230 done, continues 9/14 9:00 AM"). CampaignPanel's waiting
+            label already says that, in matching wording and without the
+            scheduler's internal phrasing — showing both left two descriptions
+            of the same hold on screen at once. */}
+        {job.result && !(isCampaign(job) && (job.status === 'pending' || job.status === 'paused' || job.status === 'running')) && (
+          <div className="px-3 pb-2 text-xs text-gray-500">{job.result}</div>
+        )}
       </div>
       {open && (
         <div className="space-y-3 border-t border-gray-100 bg-gray-50 p-3">
@@ -1403,7 +1512,7 @@ export default function JobsPage({
                 : 'bg-amber-100 text-amber-700 opacity-80 hover:opacity-100'
             }`}
           >
-            running ({counts.active})
+active ({counts.active})
           </button>
         )}
         {/* literal 'running' is folded into the "Running" chip above — a

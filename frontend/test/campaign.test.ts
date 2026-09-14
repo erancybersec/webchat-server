@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeDaysLabel,
-  batchProgressLabel,
   batchSummary,
-  clockLabel,
+  canContinueNow,
   coldCapCaveat,
   estimateFinish,
+  holdInfo,
   humanMinutes,
   isCampaign,
   isOngoingForChat,
+  nextBatchLabel,
+  paceSummary,
   progressLine,
-  waitingLabel,
 } from '../src/lib/campaign';
 import type { CampaignProgress } from '../src/types';
 
@@ -35,6 +36,12 @@ const progress = (over: Partial<CampaignProgress> = {}): CampaignProgress => ({
   ...over,
 });
 
+/** Matches `holdInfo`'s own "today at HH:MM" wording for a same-day resume —
+ *  every fixture below schedules `nextRunAt` 30 minutes out, so it never
+ *  crosses into "tomorrow". */
+const todayAt = (iso: string) =>
+  `today at ${new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+
 describe('durations', () => {
   it('reads like a person wrote it', () => {
     expect(humanMinutes(0.4)).toBe('under a minute');
@@ -46,18 +53,22 @@ describe('durations', () => {
 });
 
 describe('progress line', () => {
-  it('counts everything processed, not just the successes', () => {
-    expect(progressLine(progress())).toBe('312 of 1,043 · 18/min · about 40m left');
+  it('spells out sent, skipped, failed and remaining as one plain line', () => {
+    expect(progressLine(progress())).toBe(
+      '300 of 1,043 sent · 10 skipped · 2 failed · 731 remaining · 18/min, about 40m left',
+    );
   });
 
-  it('drops the pace and the estimate once nothing is left', () => {
-    expect(progressLine(progress({ pending: 0, sent: 1031 }))).toBe('1,043 of 1,043');
+  it('drops skipped/failed/remaining clauses that are zero, and the pace with them', () => {
+    expect(progressLine(progress({ pending: 0, sent: 1043, skipped: 0, failed: 0 }))).toBe('1,043 of 1,043 sent');
   });
 
   it('promises no finish time for a campaign that is waiting for a human', () => {
     // a paused campaign continues when someone says so — not at some pace
-    expect(progressLine(progress({ status: 'paused' }))).toBe('312 of 1,043');
-    expect(progressLine(progress({ status: 'cancelled' }))).toBe('312 of 1,043');
+    expect(progressLine(progress({ status: 'paused' }))).toBe('300 of 1,043 sent · 10 skipped · 2 failed · 731 remaining');
+    expect(progressLine(progress({ status: 'cancelled' }))).toBe(
+      '300 of 1,043 sent · 10 skipped · 2 failed · 731 remaining',
+    );
   });
 
   it('reads "under a minute left" rather than "about under a minute"', () => {
@@ -68,94 +79,188 @@ describe('progress line', () => {
   it('keeps one decimal on a slow campaign', () => {
     expect(progressLine(progress({ ratePerMin: 1.5, etaMinutes: null }))).toContain('1.5/min');
   });
+
+  it('drops the pace when an attention hold is active — it would contradict the hold block', () => {
+    // the server's rate/ETA math has no idea the daily cap is about to hold
+    // this for hours; showing "under a minute left" next to a block that
+    // says "resumes tomorrow" would be a visible, confusing contradiction
+    const capped = progress({
+      status: 'pending',
+      holdReason: 'daily cold-contact cap reached — 20 first-time recipients held back',
+    });
+    expect(progressLine(capped)).not.toContain('/min');
+    expect(progressLine(capped)).not.toContain('left');
+    expect(progressLine(capped)).toBe('300 of 1,043 sent · 10 skipped · 2 failed · 731 remaining');
+    // a routine hold (batch/window/day) keeps the pace — it's still honest
+    expect(progressLine(progress({ status: 'pending', holdReason: 'batch of 50 sent' }))).toContain('/min');
+  });
 });
 
-describe('what it is waiting for', () => {
-  it('names the hold, and the moment an unattended pause ends', () => {
-    expect(waitingLabel(progress({ status: 'paused' }))?.text).toBe('Paused · 731 still to send');
-    expect(waitingLabel(progress({ status: 'cancelled' }))?.text).toBe('Stopped · 731 never sent');
+describe('holdInfo — the one thing to say about why a campaign is not sending', () => {
+  it('never leaks scheduler vocabulary — every routine scenario gets its own plain sentence', () => {
     const next = new Date(Date.now() + 30 * 60_000).toISOString();
-    // with batches it is the next batch; with only a sending window it just continues
-    expect(
-      waitingLabel(progress({ status: 'pending', nextRunAt: next, batch: { size: 50, pauseMin: 30 } }))?.text,
-    ).toMatch(/^Next batch /);
-    expect(
-      waitingLabel(progress({ status: 'pending', nextRunAt: next, batch: { pauseMin: 0, pauseAt: '21:00', resumeAt: '09:00' } }))?.text,
-    ).toMatch(/^Continues /);
+    const when = todayAt(next);
+
+    // sending window closed, auto-resumes — the wording must say "sending
+    // hours", never repeat the raw "reached 21:00" the server sent
+    const window = holdInfo(
+      progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'reached 21:00' }),
+    );
+    expect(window).toEqual({ headline: 'Outside sending hours', detail: `Sending resumes ${when}`, kind: 'routine' });
+
+    // not one of the campaign's active days
+    const day = holdInfo(
+      progress({
+        status: 'pending',
+        nextRunAt: next,
+        batch: { size: 30, pauseMin: 5 },
+        holdReason: 'not an active day for this campaign',
+      }),
+    );
+    expect(day).toEqual({ headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' });
+
+    // a plain batch boundary is routine AND resolves itself within minutes —
+    // it gets no block of its own at all (see paceSummary for where it lives)
+    const batch = holdInfo(
+      progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'batch of 30 sent' }),
+    );
+    expect(batch).toBeNull();
   });
 
-  it('says WHY it stopped when the server gave a reason the operator needs to act on', () => {
+  it('tells a sending-window wait apart from a batch wait even when both are configured on the same job', () => {
+    // this is exactly the confusing case: a campaign with BOTH a batch size
+    // and a sending window hits the window boundary, not a batch boundary —
+    // the block must say so, not default to "batch" just because a batch
+    // size happens to be set too (that was a real mislabel).
     const next = new Date(Date.now() + 30 * 60_000).toISOString();
-    const why = 'daily cold-contact cap reached — 940 first-time recipients held back';
-    // a cap hold and a plain batch boundary both "continue at 09:00" — only the
-    // reason (and the 'attention' kind) tells the operator which of them needs
-    // them to do something
-    const capHold = waitingLabel(
-      progress({ status: 'pending', nextRunAt: next, batch: { size: 50, pauseMin: 30 }, holdReason: why }),
-    );
-    expect(capHold?.text).toBe(`Continues ${clockLabel(next)} — ${why}`);
-    expect(capHold?.kind).toBe('attention');
-    const deadLine = waitingLabel(progress({ status: 'paused', holdReason: 'the WhatsApp line is disconnected' }));
-    expect(deadLine?.text).toBe('Paused — the WhatsApp line is disconnected · 731 still to send');
-    expect(deadLine?.kind).toBe('attention');
-    // a routine batch boundary (or the sending window closing) is already
-    // explained by the pacing chips next to it — no reason repeated, and it's
-    // not flagged as something to look at
-    const batchHold = waitingLabel(
-      progress({ status: 'pending', nextRunAt: next, batch: { size: 50, pauseMin: 30 }, holdReason: 'batch of 50 sent' }),
-    );
-    expect(batchHold?.text).toBe(`Next batch ${clockLabel(next)}`);
-    expect(batchHold?.kind).toBe('routine');
-    const windowHold = waitingLabel(progress({ status: 'paused', holdReason: 'reached 21:00' }));
-    expect(windowHold?.text).toBe('Paused · 731 still to send');
-    expect(windowHold?.kind).toBe('routine');
-    // a hand pause explains itself; the server sends no reason for one
-    const handPause = waitingLabel(progress({ status: 'paused' }));
-    expect(handPause?.text).toBe('Paused · 731 still to send');
-    expect(handPause?.kind).toBe('routine');
+    const bothConfigured = { size: 30, pauseMin: 5 } as const;
+    expect(
+      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'reached 21:00' }))
+        ?.headline,
+    ).toBe('Outside sending hours');
+    expect(
+      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'batch of 30 sent' })),
+    ).toBeNull();
   });
 
-  it('spells out the contact count when a multi-item sequence makes it differ from the message count', () => {
-    // a 2-item sequence: 731 pending ROWS is really ~366 pending PEOPLE
+  it('flags the daily cold-contact cap as needing attention, with the count in plain words', () => {
+    const next = new Date(Date.now() + 30 * 60_000).toISOString();
+    const when = todayAt(next);
+    const cap = holdInfo(
+      progress({
+        status: 'pending',
+        nextRunAt: next,
+        batch: { size: 50, pauseMin: 30 },
+        holdReason: 'daily cold-contact cap reached — 12 first-time recipients held back',
+      }),
+    );
+    expect(cap).toEqual({
+      headline: 'Daily contact limit reached',
+      detail: `12 new contacts held back — resumes ${when}`,
+      kind: 'attention',
+    });
+    // no count in the reason string — still says something sensible
     expect(
-      waitingLabel(progress({ status: 'paused', contacts: { sent: 150, skipped: 5, failed: 1, pending: 366 } }))?.text,
-    ).toBe('Paused · 731 still to send (366 contacts)');
-    expect(
-      waitingLabel(progress({ status: 'cancelled', contacts: { sent: 150, skipped: 5, failed: 1, pending: 366 } }))?.text,
-    ).toBe('Stopped · 731 never sent (366 contacts)');
+      holdInfo(progress({ status: 'pending', nextRunAt: next, holdReason: 'daily cold-contact cap reached' }))?.detail,
+    ).toBe(`Resumes ${when}`);
   });
 
-  it('says nothing while it is simply running, or once it is finished', () => {
-    expect(waitingLabel(progress())).toBe(null);
-    expect(waitingLabel(progress({ status: 'done', pending: 0 }))).toBe(null);
-    // a batch pause already in the past is not something to announce
+  it('reads a manual pause, a window pause with nowhere to auto-resume, and an unrecognized hold differently', () => {
+    // a plain hand pause explains itself — no reason to repeat
+    expect(holdInfo(progress({ status: 'paused' }))).toEqual({
+      headline: 'Paused',
+      detail: "Won't resume until you press Continue",
+      kind: 'routine',
+    });
+    // the window closed with no resumeAt configured — this landed on 'paused'
+    // (nothing to schedule), and still deserves the accurate cause, not a
+    // generic "Paused" that reads as if a human pressed the button
+    expect(holdInfo(progress({ status: 'paused', holdReason: 'reached 21:00' }))).toEqual({
+      headline: 'Outside sending hours',
+      detail: "Won't resume until you press Continue",
+      kind: 'routine',
+    });
+    // an unrecognized reason (a dead WhatsApp line, say) still gets flagged
+    expect(holdInfo(progress({ status: 'paused', holdReason: 'the WhatsApp line is disconnected' }))).toEqual({
+      headline: 'Needs attention',
+      detail: "the WhatsApp line is disconnected — won't resume until you press Continue",
+      kind: 'attention',
+    });
+  });
+
+  it('says Stopped for a cancelled campaign with unsent rows', () => {
+    expect(holdInfo(progress({ status: 'cancelled' }))).toEqual({
+      headline: 'Stopped',
+      detail: '731 never sent',
+      kind: 'routine',
+    });
+  });
+
+  it('says nothing while it is simply running, once it is finished, or once an old hold is in the past', () => {
+    expect(holdInfo(progress())).toBeNull();
+    expect(holdInfo(progress({ status: 'done', pending: 0 }))).toBeNull();
+    // a batch/window pause already in the past is not something to announce
     const past = new Date(Date.now() - 60_000).toISOString();
-    expect(waitingLabel(progress({ status: 'pending', nextRunAt: past }))).toBe(null);
+    expect(holdInfo(progress({ status: 'pending', nextRunAt: past }))).toBeNull();
   });
 });
 
-describe('batchProgressLabel', () => {
-  it('is null without a batch size — nothing to show', () => {
-    expect(batchProgressLabel(progress({ batch: null, batchSent: null }))).toBeNull();
-    expect(batchProgressLabel(progress({ batch: { pauseMin: 0, pauseAt: '21:00' }, batchSent: null }))).toBeNull();
+describe('canContinueNow', () => {
+  it('is true for every hold "Continue now" can actually shortcut', () => {
+    expect(canContinueNow(null)).toBe(true);
+    expect(canContinueNow('batch of 50 sent')).toBe(true);
+    expect(canContinueNow('reached 21:00')).toBe(true);
+    expect(canContinueNow('not an active day for this campaign')).toBe(true);
+    expect(canContinueNow('the WhatsApp line is disconnected')).toBe(true);
   });
 
-  it('formats how far into the current batch a running campaign is', () => {
-    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: 14 }))).toBe(
-      '14 of 30 this batch',
-    );
+  it('is false only for the daily cold-contact cap — it re-hits the same limit immediately', () => {
+    expect(canContinueNow('daily cold-contact cap reached — 12 first-time recipients held back')).toBe(false);
+  });
+});
+
+describe('nextBatchLabel', () => {
+  it('is the one thing a plain batch pause still owes the operator, kept out of holdInfo', () => {
+    const next = new Date(Date.now() + 30 * 60_000).toISOString();
+    const p = progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'batch of 30 sent' });
+    expect(holdInfo(p)).toBeNull();
+    expect(nextBatchLabel(p)).toBe(`next batch ${todayAt(next)}`);
   });
 
-  it('treats a missing count as 0, not a crash', () => {
-    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: null }))).toBe(
-      '0 of 30 this batch',
-    );
+  it('is null for every other hold — those already say when via holdInfo', () => {
+    const next = new Date(Date.now() + 30 * 60_000).toISOString();
+    expect(
+      nextBatchLabel(progress({ status: 'pending', nextRunAt: next, holdReason: 'reached 21:00' })),
+    ).toBeNull();
+    expect(nextBatchLabel(progress())).toBeNull(); // running
+    expect(nextBatchLabel(progress({ status: 'paused' }))).toBeNull();
+    expect(nextBatchLabel(progress({ status: 'pending', nextRunAt: next, pending: 0, holdReason: 'batch of 30 sent' }))).toBeNull();
+  });
+});
+
+describe('paceSummary', () => {
+  it('is null with no pacing rule at all', () => {
+    expect(paceSummary(null)).toBeNull();
+    expect(paceSummary({ pauseMin: 0 })).toBeNull();
   });
 
-  it('shows a mid-sequence overshoot honestly instead of clamping it', () => {
-    expect(batchProgressLabel(progress({ batch: { size: 30, pauseMin: 30 }, batchSent: 31 }))).toBe(
-      '31 of 30 this batch',
-    );
+  it('reads the sending-hours window as a plain range', () => {
+    expect(paceSummary({ pauseMin: 0, pauseAt: '21:00', resumeAt: '09:00' })).toBe('Sending hours 09:00–21:00');
+  });
+
+  it('says so when the window has no auto-resume', () => {
+    expect(paceSummary({ pauseMin: 0, pauseAt: '21:00' })).toBe('Sends until 21:00');
+  });
+
+  it('describes batch pacing without the within-batch counter', () => {
+    expect(paceSummary({ size: 30, pauseMin: 5 })).toBe('batches of 30, 5m apart');
+    expect(paceSummary({ size: 30, pauseMin: 0 })).toBe('batches of 30 — manual continue');
+  });
+
+  it('combines hours, active days and batching into one sentence', () => {
+    expect(
+      paceSummary({ pauseAt: '21:00', resumeAt: '09:00', pauseMin: 5, activeDays: [1, 3, 5], size: 30 }),
+    ).toBe('Sending hours 09:00–21:00 · on Mon, Wed, Fri · batches of 30, 5m apart');
   });
 });
 

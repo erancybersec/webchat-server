@@ -12,6 +12,24 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:local:web"],
       "port": 5173
+    },
+    {
+      "name": "mock-evolution",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/mock-evolution.mjs"],
+      "port": 9099
+    },
+    {
+      "name": "backend-sandbox-mockevo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=.env.sandbox", "--import", "tsx", "backend/src/index.ts"],
+      "port": 8090
+    },
+    {
+      "name": "frontend-sandbox",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["-w", "frontend", "run", "dev", "--", "--mode", "sandbox", "--port", "5174"],
+      "port": 5174
     }
   ]
 }

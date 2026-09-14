@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { batchProgressLabel, clockLabel, pauseLabel, progressLine, waitingLabel } from '../lib/campaign';
+import { clockLabel, holdInfo, nextBatchLabel, paceSummary, progressLine } from '../lib/campaign';
 import type { CampaignProgress, Job, JobProgress } from '../types';
 
 /** Statuses where the ledger is still moving (or about to) — poll while so. */
@@ -27,11 +27,16 @@ function SegmentedBar({ p }: { p: CampaignProgress }) {
 }
 
 /**
- * The live picture of a big send: how far along it is, how fast, and what it is
- * waiting for. The numbers come from the server's LEDGER (`/progress`), so they
- * are right after a refresh, a restart, or a pause of days — the SSE event only
- * makes them arrive sooner. Pause / Continue / Stop live in the row's button
- * group above, so they work the same for every job, campaign or not.
+ * The live picture of a big send: how far along it is, and — only while it
+ * actually matters — why it isn't moving right now and when that changes.
+ * The numbers come from the server's LEDGER (`/progress`), so they are right
+ * after a refresh, a restart, or a pause of days — the SSE event only makes
+ * them arrive sooner. Pause / Continue / Stop live in the row's action
+ * button above, so they work the same for every job, campaign or not.
+ *
+ * Deliberately NOT shown here: which scheduler hold reason caused a wait, the
+ * within-batch counter, or the sending-window rule as anything louder than a
+ * footnote — those are implementation detail, not campaign progress.
  */
 export default function CampaignPanel({
   job,
@@ -66,57 +71,31 @@ export default function CampaignPanel({
       : p;
   if (shown.total === 0) return null;
 
-  const waiting = waitingLabel(shown);
+  const hold = holdInfo(shown);
+  // a plain batch pause gets no hold block (routine, resolves in minutes) —
+  // its resume time still belongs somewhere, so it rides along in the footer
+  const pace = [paceSummary(shown.batch), nextBatchLabel(shown)].filter(Boolean).join(' · ') || null;
+  // "Last sent" only earns its place once there's a hold to explain — while
+  // actually running it's obvious, and it never competes with the hold text.
+  const showLastSent = shown.lastSentAt && shown.pending > 0 && job.status !== 'running';
 
   return (
     <div className="space-y-1.5 px-3 pb-2">
       <SegmentedBar p={shown} />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
-        <span>{progressLine(shown)}</span>
-        {shown.sent > 0 && (
-          <span title="Distinct recipients who received at least one message — a sequence sends several per contact">
-            → {shown.contacts.sent.toLocaleString()} contact{shown.contacts.sent === 1 ? '' : 's'}
-          </span>
-        )}
-        {shown.failed > 0 && <span className="text-red-500">{shown.failed} failed</span>}
-        {shown.skipped > 0 && (
-          <span className="text-amber-600">
-            {shown.skipped} skipped
-            {shown.contacts.skipped !== shown.skipped ? ` (${shown.contacts.skipped} contacts)` : ''}
-          </span>
-        )}
-        {waiting &&
-          (waiting.kind === 'attention' ? (
-            <span
-              title="Not routine pacing — this needs a look"
-              className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-700"
-            >
-              ⚠ {waiting.text}
-            </span>
-          ) : (
-            <span className="font-medium text-gray-700">{waiting.text}</span>
-          ))}
-        {/* the pacing, as two separate facts: the hours it may send in, and
-            (if set) the batch size — either can be absent */}
-        {shown.batch?.pauseAt && (
-          <span
-            title="the campaign stops itself when the clock reaches this hour"
-            className="rounded-full bg-gray-100 px-1.5 py-0.5"
-          >
-            🕐 until {shown.batch.pauseAt}
-            {shown.batch.resumeAt ? ` · back at ${shown.batch.resumeAt}` : ' · then waits'}
-          </span>
-        )}
-        {!!shown.batch?.size && (
-          <span
-            title="Resets at each batch boundary; survives a server restart mid-batch"
-            className="rounded-full bg-gray-100 px-1.5 py-0.5"
-          >
-            ⏱ {batchProgressLabel(shown)}
-            {shown.batch.pauseMin > 0 ? ` · ${pauseLabel(shown.batch)} apart` : ' · manual'}
-          </span>
-        )}
-      </div>
+      <p className="text-[11px] text-gray-500">{progressLine(shown)}</p>
+      {hold &&
+        (hold.kind === 'attention' ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+            <p className="text-[12px] font-semibold text-amber-800">⚠ {hold.headline}</p>
+            <p className="text-[11px] text-amber-700">{hold.detail}</p>
+          </div>
+        ) : (
+          // routine: visible, but calm — a quiet rule, no card-in-card
+          <div className="border-l-2 border-gray-200 pl-2.5">
+            <p className="text-[12px] font-medium text-gray-600">{hold.headline}</p>
+            <p className="text-[11px] text-gray-400">{hold.detail}</p>
+          </div>
+        ))}
       {job.status === 'paused' && (
         <p className="text-[11px] text-gray-400">
           {shown.sent.toLocaleString()} already received this — editing now only changes what the
@@ -127,8 +106,12 @@ export default function CampaignPanel({
           get.
         </p>
       )}
-      {shown.lastSentAt && shown.pending > 0 && job.status !== 'running' && (
-        <p className="text-[11px] text-gray-400">Last message went out {clockLabel(shown.lastSentAt)}.</p>
+      {(pace || showLastSent) && (
+        <p className="text-[10.5px] leading-relaxed text-gray-400/80">
+          {pace}
+          {pace && showLastSent ? <br /> : null}
+          {showLastSent ? `Last sent ${clockLabel(shown.lastSentAt!)}` : null}
+        </p>
       )}
     </div>
   );

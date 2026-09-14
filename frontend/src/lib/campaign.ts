@@ -43,62 +43,142 @@ export function clockLabel(iso: string): string {
     : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-/** "312 of 1,043 · 18/min · about 40m left" — the line under the bar. */
+/**
+ * "152 of 230 sent · 6 skipped · 72 remaining · 2.6/min, about 25m left" — the
+ * one line that answers "how much has been sent" at a glance. A pace and a
+ * finish time are only honest while the campaign is actually going (or due to
+ * continue by itself) — one that waits for a human has no finish time to
+ * promise, `holdInfo` says what it needs instead. It's also dishonest while
+ * an ATTENTION hold is active (the cap, say): the server's ETA math paces
+ * off `ratePerMin` alone and has no idea a multi-hour hold is coming, so
+ * showing "under a minute left" next to a block that says "resumes in 7
+ * hours" would flatly contradict it.
+ */
 export function progressLine(p: CampaignProgress): string {
-  const done = p.sent + p.skipped + p.failed;
-  const parts = [`${done.toLocaleString()} of ${p.total.toLocaleString()}`];
-  // A pace and a finish time are only honest while the campaign is actually
-  // going (or due to continue by itself). One that waits for a human has no
-  // finish time to promise — waitingLabel says what it needs instead.
-  const moving = p.status === 'running' || p.status === 'pending';
-  if (p.pending > 0 && moving && p.ratePerMin)
-    parts.push(`${p.ratePerMin >= 10 ? Math.round(p.ratePerMin) : p.ratePerMin.toFixed(1)}/min`);
-  if (p.pending > 0 && moving && p.etaMinutes != null)
-    parts.push(p.etaMinutes < 1 ? 'under a minute left' : `about ${humanMinutes(p.etaMinutes)} left`);
+  const parts = [`${p.sent.toLocaleString()} of ${p.total.toLocaleString()} sent`];
+  if (p.skipped > 0) parts.push(`${p.skipped.toLocaleString()} skipped`);
+  if (p.failed > 0) parts.push(`${p.failed.toLocaleString()} failed`);
+  if (p.pending > 0) parts.push(`${p.pending.toLocaleString()} remaining`);
+  const moving = (p.status === 'running' || p.status === 'pending') && classifyHold(p.holdReason ?? null).kind !== 'attention';
+  if (p.pending > 0 && moving && (p.ratePerMin || p.etaMinutes != null)) {
+    const pace: string[] = [];
+    if (p.ratePerMin) pace.push(`${p.ratePerMin >= 10 ? Math.round(p.ratePerMin) : p.ratePerMin.toFixed(1)}/min`);
+    if (p.etaMinutes != null)
+      pace.push(p.etaMinutes < 1 ? 'under a minute left' : `about ${humanMinutes(p.etaMinutes)} left`);
+    parts.push(pace.join(', '));
+  }
   return parts.join(' · ');
 }
 
 /**
  * A hold the operator configured on purpose (a batch boundary, the sending
  * window closing for the day) vs one that means the campaign hit something
- * unplanned (the daily cold-contact cap, a dead line) — the first is already
- * explained by the pacing chips next to it and needs no further comment; the
- * second is the one thing on this row worth a second look.
+ * unplanned (the daily cold-contact cap, a dead line) — the first is calm,
+ * everyday pacing; the second is the one thing on this row worth a second
+ * look. `scenario` further tells the routine holds apart from each other, so
+ * "batch of 30 sent" and "reached 21:00" never collapse into the same
+ * mislabel — but none of these scenario names, or the server's own
+ * hold-reason string, are meant to reach the card: `holdInfo` below is the
+ * only thing allowed to translate one into what the operator actually reads.
  */
 export type HoldKind = 'routine' | 'attention';
-const ROUTINE_HOLD = /^(batch of \d+ sent|reached \d{1,2}:\d{2}|not an active day for this campaign)$/;
-function classifyHold(holdReason: string | null): HoldKind {
-  return holdReason && !ROUTINE_HOLD.test(holdReason) ? 'attention' : 'routine';
+type HoldScenario = 'batch' | 'window' | 'day' | 'cap' | 'other';
+function classifyHold(holdReason: string | null): { kind: HoldKind; scenario: HoldScenario } {
+  if (holdReason && /^batch of \d+ sent$/.test(holdReason)) return { kind: 'routine', scenario: 'batch' };
+  if (holdReason && /^reached \d{1,2}:\d{2}$/.test(holdReason)) return { kind: 'routine', scenario: 'window' };
+  if (holdReason === 'not an active day for this campaign') return { kind: 'routine', scenario: 'day' };
+  if (holdReason && /^daily cold-contact cap reached/.test(holdReason)) return { kind: 'attention', scenario: 'cap' };
+  return { kind: holdReason ? 'attention' : 'routine', scenario: 'other' };
 }
 
 /**
- * What the campaign is waiting for, in words — null while it is simply running
- * (the bar already says that).
+ * Whether pressing "Continue now" would actually do anything — false for the
+ * one hold the scheduler can't be talked out of early: the daily cold-contact
+ * cap re-evaluates itself the moment the job wakes up, so continuing before
+ * the cap resets just re-hits the same limit and reschedules for nothing.
+ * Every other hold (a batch pause, a closed sending window, an inactive day,
+ * a plain hand pause) genuinely fires early on request.
  */
-export function waitingLabel(p: CampaignProgress): { text: string; kind: HoldKind } | null {
+export function canContinueNow(holdReason: string | null): boolean {
+  return classifyHold(holdReason).scenario !== 'cap';
+}
+
+/** "today at 14:00" / "tomorrow at 09:00" / "Mon at 09:00" — how an operator
+ *  reads a resume moment relative to now, not just its bare clock time. Falls
+ *  back to `clockLabel`'s month/day form more than a week out. */
+function dayRelativeLabel(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (diffDays === 0) return `today at ${time}`;
+  if (diffDays === 1) return `tomorrow at ${time}`;
+  if (diffDays > 1 && diffDays < 7) return `${DAY_NAMES[d.getDay()]} at ${time}`;
+  return clockLabel(iso);
+}
+
+export interface HoldInfo {
+  /** Short, bold statement of what's happening — never scheduler vocabulary. */
+  headline: string;
+  /** One supporting line: why, and/or when it resumes. */
+  detail: string;
+  kind: HoldKind;
+}
+
+/**
+ * The one thing to say about why a campaign isn't sending right now — a
+ * headline plus a single supporting line, collapsing every internal hold
+ * reason down to a handful of user-facing scenarios. `null` while the
+ * campaign is simply running (the bar already says that), while nothing is
+ * left to send, or while the hold is a plain batch boundary — routine,
+ * resolves itself in minutes, and not worth a block of its own (it shows up
+ * in the pacing footer instead, via `paceSummary`).
+ */
+export function holdInfo(p: CampaignProgress): HoldInfo | null {
   if (p.pending === 0) return null;
-  const kind = classifyHold(p.holdReason ?? null);
-  // Routine holds are self-explanatory from the pacing chips ("46 per batch",
-  // "until 18:00") sitting right next to this text — repeating the scheduler's
-  // internal reason string there would just be noise. An attention-worthy hold
-  // has no chip to explain it, so it gets spelled out in full.
-  const why = kind === 'attention' && p.holdReason ? ` — ${p.holdReason}` : '';
-  // a sequence sends several messages per contact — spell out the people
-  // count too whenever it differs from the message-row count
-  const toContacts =
-    p.contacts.pending !== p.pending ? ` (${p.contacts.pending.toLocaleString()} contacts)` : '';
-  if (p.status === 'paused')
-    return { text: `Paused${why} · ${p.pending.toLocaleString()} still to send${toContacts}`, kind };
+  const { kind, scenario } = classifyHold(p.holdReason ?? null);
   if (p.status === 'cancelled')
-    return { text: `Stopped · ${p.pending.toLocaleString()} never sent${toContacts}`, kind: 'routine' };
+    return { headline: 'Stopped', detail: `${p.pending.toLocaleString()} never sent`, kind: 'routine' };
+  if (p.status === 'paused') {
+    if (scenario === 'window')
+      return { headline: 'Outside sending hours', detail: "Won't resume until you press Continue", kind: 'routine' };
+    if (kind === 'attention' && p.holdReason)
+      return { headline: 'Needs attention', detail: `${p.holdReason} — won't resume until you press Continue`, kind };
+    return { headline: 'Paused', detail: "Won't resume until you press Continue", kind: 'routine' };
+  }
   if (p.status === 'pending' && p.nextRunAt && new Date(p.nextRunAt).getTime() > Date.now()) {
-    if (kind === 'attention') return { text: `Continues ${clockLabel(p.nextRunAt)}${why}`, kind };
-    // "next batch" only means something when there ARE batches; a campaign
-    // waiting out its sending window is simply continuing at an hour
-    const text = p.batch?.size ? `Next batch ${clockLabel(p.nextRunAt)}` : `Continues ${clockLabel(p.nextRunAt)}`;
-    return { text, kind };
+    const when = dayRelativeLabel(p.nextRunAt);
+    if (scenario === 'cap') {
+      const held = /(\d+) first-time recipient/.exec(p.holdReason ?? '')?.[1];
+      const detail = held
+        ? `${held} new contact${held === '1' ? '' : 's'} held back — resumes ${when}`
+        : `Resumes ${when}`;
+      return { headline: 'Daily contact limit reached', detail, kind: 'attention' };
+    }
+    if (scenario === 'window') return { headline: 'Outside sending hours', detail: `Sending resumes ${when}`, kind: 'routine' };
+    if (scenario === 'day') return { headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' };
+    if (scenario === 'batch') return null;
+    if (kind === 'attention') return { headline: 'Needs attention', detail: p.holdReason ?? `Resumes ${when}`, kind };
+    // no recognized reason at all (older data, a caller that never set one) —
+    // still say something rather than leaving "Waiting" unexplained
+    return { headline: 'Waiting', detail: `Continues ${when}`, kind: 'routine' };
   }
   return null;
+}
+
+/**
+ * "next batch today at 14:32" — the one fact a plain batch pause still owes
+ * the operator, even though it isn't worth `holdInfo`'s block. Quiet, footer
+ * material: it belongs next to `paceSummary`, not competing with progress.
+ * `null` for every other hold (they already say when via `holdInfo`) and
+ * while the campaign is simply running or finished.
+ */
+export function nextBatchLabel(p: CampaignProgress): string | null {
+  if (p.pending === 0 || p.status !== 'pending' || !p.nextRunAt) return null;
+  if (new Date(p.nextRunAt).getTime() <= Date.now()) return null;
+  if (classifyHold(p.holdReason ?? null).scenario !== 'batch') return null;
+  return `next batch ${dayRelativeLabel(p.nextRunAt)}`;
 }
 
 /** The sending window in words: "sends until 21:00, continues 09:00", plus the
@@ -120,13 +200,23 @@ export function pauseLabel(rule: BatchRule): string {
     : `${rule.pauseMin}m`;
 }
 
-/** "14 of 30 this batch" — how far into the current batch a running campaign
- *  is. null when the campaign has no batch size at all (nothing to show). A
- *  mid-sequence overshoot (the boundary waits for a recipient's last item) is
- *  shown honestly rather than clamped — "31 of 30" is what actually happened. */
-export function batchProgressLabel(p: CampaignProgress): string | null {
-  if (!p.batch?.size) return null;
-  return `${p.batchSent ?? 0} of ${p.batch.size} this batch`;
+/**
+ * "Sending hours 09:00–21:00 · batches of 30, 5–8 min apart" — the pacing
+ * rule as one quiet sentence for a live campaign card's footer. Unlike
+ * `windowSummary` (Compose's before-you-send readback, which frames the same
+ * facts as a warning — "then waits for your Continue"), this is background
+ * configuration, not something to react to; `null` when there's no pacing
+ * rule at all. The within-batch counter (`batchSent`) deliberately isn't
+ * part of this — it's implementation detail that competes with campaign
+ * progress rather than explaining it.
+ */
+export function paceSummary(rule: BatchRule | null): string | null {
+  if (!rule) return null;
+  const parts: string[] = [];
+  if (rule.pauseAt) parts.push(rule.resumeAt ? `Sending hours ${rule.resumeAt}–${rule.pauseAt}` : `Sends until ${rule.pauseAt}`);
+  if (rule.activeDays?.length) parts.push(`on ${activeDaysLabel(rule.activeDays)}`);
+  if (rule.size) parts.push(rule.pauseMin > 0 ? `batches of ${rule.size}, ${pauseLabel(rule)} apart` : `batches of ${rule.size} — manual continue`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 function parseHHMM(v: string): number | null {
