@@ -1198,9 +1198,10 @@ export default function JobsPage({
   const jobs = pages.data?.pages.flatMap((p) => p.jobs) ?? [];
   const counts = pages.data?.pages[0]?.counts ?? {};
   const total = pages.data?.pages[0]?.total ?? 0;
-  // 'active' overlays the per-status counts (its jobs are also counted under
-  // 'running'/'pending' above) — excluded here so it isn't double-counted.
-  const totalAll = ALL_STATUSES.reduce((a, s) => a + (counts[s] ?? 0), 0);
+  // 'active' is its own bucket now — the server's per-status counts already
+  // exclude anything ACTIVE_CAMPAIGN claims, so this adds it back exactly
+  // once instead of leaving it uncounted.
+  const totalAll = ALL_STATUSES.reduce((a, s) => a + (counts[s] ?? 0), 0) + (counts.active ?? 0);
   const copy = COPY[scope];
   // Bulk-clearing wipes finished jobs + ledger irreversibly — admins only by
   // default. Hide the button (the server enforces with 403 regardless) until a

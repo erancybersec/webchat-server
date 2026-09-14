@@ -9,7 +9,6 @@ import {
   humanMinutes,
   isCampaign,
   isOngoingForChat,
-  nextBatchLabel,
   paceSummary,
   progressLine,
 } from '../src/lib/campaign';
@@ -119,12 +118,13 @@ describe('holdInfo — the one thing to say about why a campaign is not sending'
     );
     expect(day).toEqual({ headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' });
 
-    // a plain batch boundary is routine AND resolves itself within minutes —
-    // it gets no block of its own at all (see paceSummary for where it lives)
+    // a plain batch boundary is routine and resolves itself within minutes,
+    // but it still gets a block — a "Waiting" pill with nothing under it
+    // reads as broken, not calm
     const batch = holdInfo(
       progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'batch of 30 sent' }),
     );
-    expect(batch).toBeNull();
+    expect(batch).toEqual({ headline: 'Between batches', detail: `Next batch ${when}`, kind: 'routine' });
   });
 
   it('tells a sending-window wait apart from a batch wait even when both are configured on the same job', () => {
@@ -139,8 +139,9 @@ describe('holdInfo — the one thing to say about why a campaign is not sending'
         ?.headline,
     ).toBe('Outside sending hours');
     expect(
-      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'batch of 30 sent' })),
-    ).toBeNull();
+      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'batch of 30 sent' }))
+        ?.headline,
+    ).toBe('Between batches');
   });
 
   it('flags the daily cold-contact cap as needing attention, with the count in plain words', () => {
@@ -216,25 +217,6 @@ describe('canContinueNow', () => {
 
   it('is false only for the daily cold-contact cap — it re-hits the same limit immediately', () => {
     expect(canContinueNow('daily cold-contact cap reached — 12 first-time recipients held back')).toBe(false);
-  });
-});
-
-describe('nextBatchLabel', () => {
-  it('is the one thing a plain batch pause still owes the operator, kept out of holdInfo', () => {
-    const next = new Date(Date.now() + 30 * 60_000).toISOString();
-    const p = progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'batch of 30 sent' });
-    expect(holdInfo(p)).toBeNull();
-    expect(nextBatchLabel(p)).toBe(`next batch ${todayAt(next)}`);
-  });
-
-  it('is null for every other hold — those already say when via holdInfo', () => {
-    const next = new Date(Date.now() + 30 * 60_000).toISOString();
-    expect(
-      nextBatchLabel(progress({ status: 'pending', nextRunAt: next, holdReason: 'reached 21:00' })),
-    ).toBeNull();
-    expect(nextBatchLabel(progress())).toBeNull(); // running
-    expect(nextBatchLabel(progress({ status: 'paused' }))).toBeNull();
-    expect(nextBatchLabel(progress({ status: 'pending', nextRunAt: next, pending: 0, holdReason: 'batch of 30 sent' }))).toBeNull();
   });
 });
 

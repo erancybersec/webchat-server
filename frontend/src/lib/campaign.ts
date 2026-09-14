@@ -130,10 +130,11 @@ export interface HoldInfo {
  * The one thing to say about why a campaign isn't sending right now — a
  * headline plus a single supporting line, collapsing every internal hold
  * reason down to a handful of user-facing scenarios. `null` while the
- * campaign is simply running (the bar already says that), while nothing is
- * left to send, or while the hold is a plain batch boundary — routine,
- * resolves itself in minutes, and not worth a block of its own (it shows up
- * in the pacing footer instead, via `paceSummary`).
+ * campaign is simply running (the bar already says that) or while nothing
+ * is left to send. Every hold gets a block, batch boundaries included — a
+ * "Waiting" pill with nothing under it to say why or when reads as broken,
+ * not calm; a batch pause earns the routine (uncolored) treatment, same as
+ * a sending-window wait, not a louder one.
  */
 export function holdInfo(p: CampaignProgress): HoldInfo | null {
   if (p.pending === 0) return null;
@@ -158,27 +159,13 @@ export function holdInfo(p: CampaignProgress): HoldInfo | null {
     }
     if (scenario === 'window') return { headline: 'Outside sending hours', detail: `Sending resumes ${when}`, kind: 'routine' };
     if (scenario === 'day') return { headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' };
-    if (scenario === 'batch') return null;
+    if (scenario === 'batch') return { headline: 'Between batches', detail: `Next batch ${when}`, kind: 'routine' };
     if (kind === 'attention') return { headline: 'Needs attention', detail: p.holdReason ?? `Resumes ${when}`, kind };
     // no recognized reason at all (older data, a caller that never set one) —
     // still say something rather than leaving "Waiting" unexplained
     return { headline: 'Waiting', detail: `Continues ${when}`, kind: 'routine' };
   }
   return null;
-}
-
-/**
- * "next batch today at 14:32" — the one fact a plain batch pause still owes
- * the operator, even though it isn't worth `holdInfo`'s block. Quiet, footer
- * material: it belongs next to `paceSummary`, not competing with progress.
- * `null` for every other hold (they already say when via `holdInfo`) and
- * while the campaign is simply running or finished.
- */
-export function nextBatchLabel(p: CampaignProgress): string | null {
-  if (p.pending === 0 || p.status !== 'pending' || !p.nextRunAt) return null;
-  if (new Date(p.nextRunAt).getTime() <= Date.now()) return null;
-  if (classifyHold(p.holdReason ?? null).scenario !== 'batch') return null;
-  return `next batch ${dayRelativeLabel(p.nextRunAt)}`;
 }
 
 /** The sending window in words: "sends until 21:00, continues 09:00", plus the

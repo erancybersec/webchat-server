@@ -130,7 +130,10 @@ const LIVE_STATUSES = `('pending','running','paused','pending_approval')`;
 // started_at (paced between batches/a sending window on its own, no operator
 // action needed). Distinct from a plain 'pending' job that has never fired —
 // that one just has no started_at yet. Not 'paused': that already waits for
-// a human and has its own chip.
+// a human and has its own chip. A row matching this is counted and listed
+// ONLY under the 'active' pseudo-status (see `page()`) — literal 'running'
+// and 'pending' filters exclude it, so a mid-campaign job never shows up as
+// belonging to two contradictory buckets at once.
 const ACTIVE_CAMPAIGN = `(status='running' OR (status='pending' AND started_at IS NOT NULL))`;
 
 // Per-instance separation. A row's effective instance is its own, or the server
@@ -284,31 +287,43 @@ export class JobStore {
       // newest-first (and an ascending counterpart) for both the queue and the
       // record; @q matches recipient/message text — same "JSON blob, plain
       // LIKE" idiom as sendsPage's recipient search below
+      // A literal status filter excludes anything ACTIVE_CAMPAIGN already
+      // claims (running, or pending-with-started_at) — that job belongs to
+      // the 'active' pseudo-status now, not also to 'running'/'pending'.
+      // @status IS NULL (the "All" view) is untouched: every job still shows
+      // up there exactly once, under its own real status.
       pageScheduledDesc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
         AND ${INSTANCE_SCOPE}
         AND (@status IS NULL OR status=@status)
+        AND NOT (@status IS NOT NULL AND ${ACTIVE_CAMPAIGN})
         AND ${JOB_TEXT_MATCH}
         ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
       pageScheduledAsc: db.prepare(`SELECT * FROM jobs WHERE ${SCHEDULED_SCOPE}
         AND ${INSTANCE_SCOPE}
         AND (@status IS NULL OR status=@status)
+        AND NOT (@status IS NOT NULL AND ${ACTIVE_CAMPAIGN})
         AND ${JOB_TEXT_MATCH}
         ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
       pageHistoryDesc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
         AND ${INSTANCE_SCOPE}
         AND (@status IS NULL OR status=@status)
+        AND NOT (@status IS NOT NULL AND ${ACTIVE_CAMPAIGN})
         AND ${JOB_TEXT_MATCH}
         ORDER BY scheduled_at DESC, created_at DESC LIMIT @limit OFFSET @offset`),
       pageHistoryAsc: db.prepare(`SELECT * FROM jobs WHERE ${HISTORY_SCOPE}
         AND ${INSTANCE_SCOPE}
         AND (@status IS NULL OR status=@status)
+        AND NOT (@status IS NOT NULL AND ${ACTIVE_CAMPAIGN})
         AND ${JOB_TEXT_MATCH}
         ORDER BY scheduled_at ASC, created_at ASC LIMIT @limit OFFSET @offset`),
+      // Same exclusion for the per-status counts (the filter chips): a job
+      // ACTIVE_CAMPAIGN already claims is represented once, via `active`
+      // below — not also inflating 'running' or 'pending'.
       countScheduled: db.prepare(
-        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${SCHEDULED_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} GROUP BY status`,
+        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${SCHEDULED_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} AND NOT ${ACTIVE_CAMPAIGN} GROUP BY status`,
       ),
       countHistory: db.prepare(
-        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} GROUP BY status`,
+        `SELECT status, COUNT(*) AS n FROM jobs WHERE ${HISTORY_SCOPE} AND ${INSTANCE_SCOPE} AND ${JOB_TEXT_MATCH} AND NOT ${ACTIVE_CAMPAIGN} GROUP BY status`,
       ),
       // "Running" chip: a pseudo-status overlaying the per-status counts above
       // (its jobs are also counted under 'running'/'pending' there) rather
@@ -630,6 +645,10 @@ export class JobStore {
     // keys GROUP BY actually returned rows for — an absent key means none.
     const activeCount = (countActiveQ.get({ ...filter, q }) as { n: number }).n;
     if (activeCount > 0) counts.active = activeCount;
+    // countScheduled/countHistory now exclude every ACTIVE_CAMPAIGN row (so
+    // 'running'/'pending' each count only their own, non-active jobs) — the
+    // "All" total adds them back exactly once, via activeCount.
+    totalAll += activeCount;
     const rows = pageQ.all({
       eff: filter.eff,
       def: filter.def,

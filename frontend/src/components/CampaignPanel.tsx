@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { clockLabel, holdInfo, nextBatchLabel, paceSummary, progressLine } from '../lib/campaign';
+import { clockLabel, holdInfo, paceSummary, progressLine } from '../lib/campaign';
 import type { CampaignProgress, Job, JobProgress } from '../types';
 
 /** Statuses where the ledger is still moving (or about to) — poll while so. */
@@ -72,9 +72,7 @@ export default function CampaignPanel({
   if (shown.total === 0) return null;
 
   const hold = holdInfo(shown);
-  // a plain batch pause gets no hold block (routine, resolves in minutes) —
-  // its resume time still belongs somewhere, so it rides along in the footer
-  const pace = [paceSummary(shown.batch), nextBatchLabel(shown)].filter(Boolean).join(' · ') || null;
+  const pace = paceSummary(shown.batch);
   // "Last sent" only earns its place once there's a hold to explain — while
   // actually running it's obvious, and it never competes with the hold text.
   const showLastSent = shown.lastSentAt && shown.pending > 0 && job.status !== 'running';

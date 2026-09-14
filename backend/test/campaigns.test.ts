@@ -98,13 +98,25 @@ describe('campaign control (batching, pause, continue)', () => {
 
     const page = jobs.page('scheduled', { limit: 50, offset: 0 });
     expect(page.counts.active).toBe(1);
-    expect(page.counts.pending).toBe(2); // 'never-run' and j1 both literally 'pending'
+    // j1 is mid-campaign (ACTIVE_CAMPAIGN) — counted under 'active' only, not
+    // also under 'pending', so the two chips never show the same job twice
+    expect(page.counts.pending).toBe(1); // 'never-run' alone
     expect(page.counts.paused).toBe(1);
 
     // filtering by the pseudo-status returns only the genuinely active one
     const onlyActive = jobs.page('scheduled', { limit: 50, offset: 0, status: 'active' });
     expect(onlyActive.jobs.map((j) => j.id)).toEqual(['j1']);
     expect(onlyActive.total).toBe(1);
+
+    // filtering by the literal 'pending' status excludes j1 the same way —
+    // it never shows up under both chips at once
+    const onlyPending = jobs.page('scheduled', { limit: 50, offset: 0, status: 'pending' });
+    expect(onlyPending.jobs.map((j) => j.id)).toEqual(['never-run']);
+    expect(onlyPending.total).toBe(1);
+
+    // the "All" view (no status filter) still lists every job exactly once
+    const all = jobs.page('scheduled', { limit: 50, offset: 0 });
+    expect(all.jobs.map((j) => j.id).sort()).toEqual(['j1', 'j2', 'never-run']);
   });
 
   it('picks a randomized wait within [pauseMin, pauseMinMax] at a batch boundary', async () => {
