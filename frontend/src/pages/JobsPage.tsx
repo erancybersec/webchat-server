@@ -845,20 +845,37 @@ function JobRow({
   }
   actions.push({ key: 'delete', label: 'Delete', onClick: () => void confirmDelete(), color: 'red' });
 
-  // A campaign card shows exactly one contextual primary action — the thing
-  // an operator actually needs right now (Pause while it's sending, Continue
-  // while it's held) — with everything else, destructive actions included,
-  // one tap away in the overflow menu. Density stays density for an ordinary
-  // job row; a big send always collapses to this shape regardless of it.
+  // A campaign card shows one contextual primary action — the thing an
+  // operator actually needs right now (Pause while it's sending, Continue
+  // while it's held) — visually strongest, with the rest of the operational
+  // actions staff realistically reach for still one click away, right there
+  // inline. `⋯` is reserved for the genuinely rare/advanced ones (resetting
+  // the batch counter after a restart, the full-audience "Edit & resend"
+  // while something is still paused, outright deleting a live campaign) —
+  // not a general dumping ground. A finished campaign has no primary action
+  // and nothing rare about what's left (Edit & resend / Resend / Delete), so
+  // it just shows every action inline, same as an ordinary job row.
   // 'resume' wins the one case both exist at once — a campaign already
   // auto-resuming on its own (Waiting: 'pending' with startedAt) can also be
   // hand-paused, but the operator's next move there is "Continue now", not
-  // "Pause"; Pause still works, one tap into the overflow.
-  const primaryKey = isCampaign(job)
-    ? (actions.find((a) => a.key === 'resume') ?? actions.find((a) => a.key === 'pause'))?.key ?? null
-    : null;
+  // "Pause"; Pause still shows inline, right next to it.
+  const isFinishedCampaign = isCampaign(job) && RESENDABLE.includes(job.status);
+  const RARE_CAMPAIGN_ACTIONS: ReadonlySet<string> = new Set(['reset-batch', 'edit-resend', 'delete']);
+  const primaryKey =
+    isCampaign(job) && !isFinishedCampaign
+      ? (actions.find((a) => a.key === 'resume') ?? actions.find((a) => a.key === 'pause'))?.key ?? null
+      : null;
   const primaryAction = primaryKey ? actions.find((a) => a.key === primaryKey)! : null;
-  const overflowActions = primaryKey ? actions.filter((a) => a.key !== primaryKey) : actions;
+  const inlineActions = isCampaign(job)
+    ? isFinishedCampaign
+      ? actions
+      : actions.filter((a) => a.key !== primaryKey && !RARE_CAMPAIGN_ACTIONS.has(a.key))
+    : [];
+  const overflowActions = isCampaign(job)
+    ? isFinishedCampaign
+      ? []
+      : actions.filter((a) => a.key !== primaryKey && RARE_CAMPAIGN_ACTIONS.has(a.key))
+    : actions;
 
   return (
     <div
@@ -939,10 +956,10 @@ function JobRow({
           </span>
           <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           {isCampaign(job) ? (
-            // One contextual primary action (Pause / Continue / Continue now)
-            // plus everything else — including the destructive actions — in a
-            // single overflow menu, regardless of density: a big send is
-            // exactly the row where four peer buttons read as a control panel.
+            // One visually-strongest primary action, the rest of the
+            // operational actions inline beside it (no extra click), and
+            // `⋯` only for the rare/advanced ones — see the comment above
+            // primaryKey/inlineActions/overflowActions.
             <>
               {primaryAction && (
                 <button
@@ -958,28 +975,35 @@ function JobRow({
                   {primaryAction.label.replace(/^[⏸▶]\s*/, '')}
                 </button>
               )}
-              <div ref={menuRef} className="relative">
-                <button
-                  onClick={() => setMenuOpen(!menuOpen)}
-                  aria-label="More actions"
-                  aria-expanded={menuOpen}
-                  className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-gray-500 hover:border-wa hover:text-wa-dark"
-                >
-                  ⋯
+              {inlineActions.map((a) => (
+                <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={actionButtonClass(a)}>
+                  {a.label}
                 </button>
-                {menuOpen && (
-                  <div
-                    className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
-                    onClick={() => setMenuOpen(false)}
+              ))}
+              {overflowActions.length > 0 && (
+                <div ref={menuRef} className="relative">
+                  <button
+                    onClick={() => setMenuOpen(!menuOpen)}
+                    aria-label="More actions"
+                    aria-expanded={menuOpen}
+                    className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-300 bg-gray-100 text-gray-500 hover:border-wa hover:text-wa-dark"
                   >
-                    {overflowActions.map((a) => (
-                      <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={menuItemClass(a)}>
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                    ⋯
+                  </button>
+                  {menuOpen && (
+                    <div
+                      className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      {overflowActions.map((a) => (
+                        <button key={a.key} onClick={a.onClick} disabled={a.disabled} title={a.title} className={menuItemClass(a)}>
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           ) : density === 'compact' ? (
             <div ref={menuRef} className="relative">
