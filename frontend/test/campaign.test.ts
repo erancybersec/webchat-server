@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeDaysLabel,
+  batchProgress,
   batchSummary,
   canContinueNow,
   coldCapCaveat,
@@ -37,9 +38,13 @@ const progress = (over: Partial<CampaignProgress> = {}): CampaignProgress => ({
 
 /** Matches `holdInfo`'s own "today at HH:MM" wording for a same-day resume —
  *  every fixture below schedules `nextRunAt` 30 minutes out, so it never
- *  crosses into "tomorrow". */
+ *  crosses into "tomorrow". Still used for the daily-cap and unrecognized-hold
+ *  wording, which stays absolute (no live countdown — see holdInfo's own doc). */
 const todayAt = (iso: string) =>
   `today at ${new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+
+/** The bare clock time `holdInfo`'s countdown wording puts in parens. */
+const clockOnly = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 describe('durations', () => {
   it('reads like a person wrote it', () => {
@@ -96,16 +101,25 @@ describe('progress line', () => {
 });
 
 describe('holdInfo — the one thing to say about why a campaign is not sending', () => {
-  it('never leaks scheduler vocabulary — every routine scenario gets its own plain sentence', () => {
-    const next = new Date(Date.now() + 30 * 60_000).toISOString();
-    const when = todayAt(next);
+  // fixed rather than real `Date.now()` so the countdown text below ("in
+  // 30:00") can't drift by a second between computing `next` and asserting.
+  const now = new Date();
+  const next = new Date(now.getTime() + 30 * 60_000).toISOString();
 
+  it('never leaks scheduler vocabulary — every routine scenario gets its own plain sentence', () => {
     // sending window closed, auto-resumes — the wording must say "sending
-    // hours", never repeat the raw "reached 21:00" the server sent
+    // hours", never repeat the raw "reached 21:00" the server sent. A
+    // routine hold that resumes on its own gets a live countdown plus the
+    // absolute clock time, not just a bare "today at HH:MM".
     const window = holdInfo(
       progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'reached 21:00' }),
+      now,
     );
-    expect(window).toEqual({ headline: 'Outside sending hours', detail: `Sending resumes ${when}`, kind: 'routine' });
+    expect(window).toEqual({
+      headline: 'Outside sending hours',
+      detail: `Sending resumes in 30:00 (${clockOnly(next)})`,
+      kind: 'routine',
+    });
 
     // not one of the campaign's active days
     const day = holdInfo(
@@ -115,16 +129,28 @@ describe('holdInfo — the one thing to say about why a campaign is not sending'
         batch: { size: 30, pauseMin: 5 },
         holdReason: 'not an active day for this campaign',
       }),
+      now,
     );
-    expect(day).toEqual({ headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' });
+    expect(day).toEqual({
+      headline: 'Not an active day',
+      detail: `Sending resumes in 30:00 (${clockOnly(next)})`,
+      kind: 'routine',
+    });
 
     // a plain batch boundary is routine and resolves itself within minutes,
     // but it still gets a block — a "Waiting" pill with nothing under it
-    // reads as broken, not calm
+    // reads as broken, not calm. The headline also names which batch is
+    // next (300 sent + 10 skipped + 2 failed = 312 processed, batches of
+    // 30 → batch 11 of ceil(1043/30) = 35).
     const batch = holdInfo(
       progress({ status: 'pending', nextRunAt: next, batch: { size: 30, pauseMin: 5 }, holdReason: 'batch of 30 sent' }),
+      now,
     );
-    expect(batch).toEqual({ headline: 'Between batches', detail: `Next batch ${when}`, kind: 'routine' });
+    expect(batch).toEqual({
+      headline: 'Between batches · batch 11 of 35',
+      detail: `Next batch in 30:00 (${clockOnly(next)})`,
+      kind: 'routine',
+    });
   });
 
   it('tells a sending-window wait apart from a batch wait even when both are configured on the same job', () => {
@@ -132,16 +158,19 @@ describe('holdInfo — the one thing to say about why a campaign is not sending'
     // and a sending window hits the window boundary, not a batch boundary —
     // the block must say so, not default to "batch" just because a batch
     // size happens to be set too (that was a real mislabel).
-    const next = new Date(Date.now() + 30 * 60_000).toISOString();
     const bothConfigured = { size: 30, pauseMin: 5 } as const;
     expect(
-      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'reached 21:00' }))
-        ?.headline,
+      holdInfo(
+        progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'reached 21:00' }),
+        now,
+      )?.headline,
     ).toBe('Outside sending hours');
     expect(
-      holdInfo(progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'batch of 30 sent' }))
-        ?.headline,
-    ).toBe('Between batches');
+      holdInfo(
+        progress({ status: 'pending', nextRunAt: next, batch: bothConfigured, holdReason: 'batch of 30 sent' }),
+        now,
+      )?.headline,
+    ).toBe('Between batches · batch 11 of 35');
   });
 
   it('flags the daily cold-contact cap as needing attention, with the count in plain words', () => {
@@ -203,6 +232,25 @@ describe('holdInfo — the one thing to say about why a campaign is not sending'
     // a batch/window pause already in the past is not something to announce
     const past = new Date(Date.now() - 60_000).toISOString();
     expect(holdInfo(progress({ status: 'pending', nextRunAt: past }))).toBeNull();
+  });
+});
+
+describe('batchProgress', () => {
+  it('is null without batch pacing, or before anything has a total to divide', () => {
+    expect(batchProgress(progress({ batch: null }))).toBeNull();
+    expect(batchProgress(progress({ batch: { size: 30, pauseMin: 5 }, total: 0 }))).toBeNull();
+  });
+
+  it('reads which batch is next off the ledger totals, not a separate counter', () => {
+    // 300 sent + 10 skipped + 2 failed = 312 processed, batches of 30 →
+    // batch 11 (of ceil(1043/30) = 35) is the one in flight/up next
+    expect(batchProgress(progress({ batch: { size: 30, pauseMin: 5 } }))).toEqual({ current: 11, total: 35 });
+  });
+
+  it('never reports a batch past the last one, even if processed slightly overshoots a boundary', () => {
+    expect(
+      batchProgress(progress({ batch: { size: 30, pauseMin: 5 }, total: 30, sent: 30, skipped: 0, failed: 0 })),
+    ).toEqual({ current: 1, total: 1 });
   });
 });
 

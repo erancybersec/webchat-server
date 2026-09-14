@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import { clockLabel, holdInfo, paceSummary, progressLine } from '../lib/campaign';
+import { batchProgress, clockLabel, holdInfo, paceSummary, progressLine } from '../lib/campaign';
 import type { CampaignProgress, Job, JobProgress } from '../types';
 
 /** Statuses where the ledger is still moving (or about to) — poll while so. */
@@ -34,9 +35,12 @@ function SegmentedBar({ p }: { p: CampaignProgress }) {
  * them arrive sooner. Pause / Continue / Stop live in the row's action
  * button above, so they work the same for every job, campaign or not.
  *
- * Deliberately NOT shown here: which scheduler hold reason caused a wait, the
- * within-batch counter, or the sending-window rule as anything louder than a
- * footnote — those are implementation detail, not campaign progress.
+ * Deliberately NOT shown here: the sending-window rule as anything louder
+ * than a subdued footer line — that's implementation detail, not campaign
+ * progress. The within-batch counter is the one exception, and only while a
+ * batch is actually mid-flight: "18 of 30 this batch" answers "is it still
+ * going?" the instant a batch starts running long, which the overall bar
+ * alone can't (it barely moves for one more send out of hundreds).
  */
 export default function CampaignPanel({
   job,
@@ -55,11 +59,12 @@ export default function CampaignPanel({
   });
 
   const p = progress.data;
-  if (!p) return null;
-  // the SSE counters are fresher mid-run, but only they know about a send that
-  // landed a second ago — everything structural still comes from the ledger
-  const shown: CampaignProgress =
-    live && !live.done && live.total === p.total && live.sent + live.skipped + live.failed > p.sent + p.skipped + p.failed
+  // Hooks run every render regardless of whether `p` has arrived yet, so
+  // `shown` is computed unconditionally (undefined until the ledger loads)
+  // rather than after an early return.
+  const shown: CampaignProgress | undefined =
+    p &&
+    (live && !live.done && live.total === p.total && live.sent + live.skipped + live.failed > p.sent + p.skipped + p.failed
       ? {
           ...p,
           sent: live.sent,
@@ -68,11 +73,29 @@ export default function CampaignPanel({
           pending: live.pending ?? p.pending,
           batchSent: live.batchSent ?? p.batchSent,
         }
-      : p;
-  if (shown.total === 0) return null;
+      : p);
 
-  const hold = holdInfo(shown);
+  // A routine hold's countdown ticks off this clock — recomputing `hold`
+  // every second while (and only while) one is actually on screen. Nothing
+  // else in this component reads `now`; a paused/attention/no-hold card
+  // never starts the interval at all.
+  const [now, setNow] = useState(() => new Date());
+  const hold = shown ? holdInfo(shown, now) : null;
+  useEffect(() => {
+    if (!(job.status === 'pending' && hold?.kind === 'routine')) return;
+    const id = window.setInterval(() => setNow(new Date()), 1_000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.status, hold?.kind]);
+
+  if (!shown || shown.total === 0) return null;
+
   const pace = paceSummary(shown.batch);
+  const bp = batchProgress(shown);
+  // The within-batch counter earns its place only while a batch is actually
+  // in flight — the moment it hits a boundary this gives way to the hold
+  // block above, so the two never compete for the same line.
+  const showBatchLive = job.status === 'running' && !!shown.batch?.size && shown.batchSent != null;
   // "Last sent" only earns its place once there's a hold to explain — while
   // actually running it's obvious, and it never competes with the hold text.
   const showLastSent = shown.lastSentAt && shown.pending > 0 && job.status !== 'running';
@@ -81,6 +104,24 @@ export default function CampaignPanel({
     <div className="space-y-1.5 px-3 pb-2">
       <SegmentedBar p={shown} />
       <p className="text-[11px] text-gray-500">{progressLine(shown)}</p>
+      {showBatchLive && (
+        <div className="rounded-md border border-wa/20 bg-green-50/60 px-2.5 py-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-wa-dark">
+              {bp ? `Batch ${bp.current} of ${bp.total}` : 'This batch'}
+            </span>
+            <span className="text-[11px] tabular-nums text-gray-500">
+              {shown.batchSent} of {shown.batch!.size} this batch
+            </span>
+          </div>
+          <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100">
+            <div
+              className="h-full rounded-full bg-wa-dark transition-all"
+              style={{ width: `${Math.min(100, (shown.batchSent! / shown.batch!.size!) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
       {hold &&
         (hold.kind === 'attention' ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
@@ -91,7 +132,7 @@ export default function CampaignPanel({
           // routine: visible, but calm — a quiet rule, no card-in-card
           <div className="border-l-2 border-gray-200 pl-2.5">
             <p className="text-[12px] font-medium text-gray-600">{hold.headline}</p>
-            <p className="text-[11px] text-gray-400">{hold.detail}</p>
+            <p className="text-[11px] tabular-nums text-gray-400">{hold.detail}</p>
           </div>
         ))}
       {job.status === 'paused' && (

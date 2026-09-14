@@ -127,6 +127,38 @@ export interface HoldInfo {
 }
 
 /**
+ * "4:32" while under an hour remains (ticks every second), "3h 12m" once it
+ * doesn't (ticks only every minute — a multi-hour wait re-rendering by the
+ * second would just jitter). `now` is a parameter, not `Date.now()` read
+ * inline, so the caller controls the tick: recompute `holdInfo` on an
+ * interval and this text updates live for free.
+ */
+function countdownText(targetIso: string, now: Date): string {
+  const totalSec = Math.round((new Date(targetIso).getTime() - now.getTime()) / 1000);
+  if (totalSec <= 0) return 'any moment';
+  if (totalSec < 3600) return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * Which batch is next (or in flight) and how many the campaign has in total
+ * — read straight off the ledger totals + the batch size, no separate
+ * counter needed. `null` without batch pacing, or before the first message
+ * (nothing to divide yet).
+ */
+export function batchProgress(
+  p: Pick<CampaignProgress, 'batch' | 'total' | 'sent' | 'skipped' | 'failed'>,
+): { current: number; total: number } | null {
+  const size = p.batch?.size;
+  if (!size || !p.total) return null;
+  const totalBatches = Math.ceil(p.total / size);
+  const processed = p.sent + p.skipped + p.failed;
+  return { current: Math.min(totalBatches, Math.floor(processed / size) + 1), total: totalBatches };
+}
+
+/**
  * The one thing to say about why a campaign isn't sending right now — a
  * headline plus a single supporting line, collapsing every internal hold
  * reason down to a handful of user-facing scenarios. `null` while the
@@ -135,8 +167,16 @@ export interface HoldInfo {
  * "Waiting" pill with nothing under it to say why or when reads as broken,
  * not calm; a batch pause earns the routine (uncolored) treatment, same as
  * a sending-window wait, not a louder one.
+ *
+ * `now` defaults to the real clock; pass a ticking value (e.g. from a
+ * 1-second interval) to get a live "in 4:32"/"in 3h 12m" countdown for the
+ * holds that resume on their own — the daily cold-contact cap and any
+ * unrecognized "needs attention" reason deliberately keep a plain "resumes
+ * {when}" instead, since a ticking number next to a warning reads as making
+ * a promise the scheduler doesn't actually keep (the cap re-checks itself
+ * the instant it wakes, it doesn't just wait out a timer).
  */
-export function holdInfo(p: CampaignProgress): HoldInfo | null {
+export function holdInfo(p: CampaignProgress, now = new Date()): HoldInfo | null {
   if (p.pending === 0) return null;
   const { kind, scenario } = classifyHold(p.holdReason ?? null);
   if (p.status === 'cancelled')
@@ -148,22 +188,34 @@ export function holdInfo(p: CampaignProgress): HoldInfo | null {
       return { headline: 'Needs attention', detail: `${p.holdReason} — won't resume until you press Continue`, kind };
     return { headline: 'Paused', detail: "Won't resume until you press Continue", kind: 'routine' };
   }
-  if (p.status === 'pending' && p.nextRunAt && new Date(p.nextRunAt).getTime() > Date.now()) {
-    const when = dayRelativeLabel(p.nextRunAt);
+  if (p.status === 'pending' && p.nextRunAt && new Date(p.nextRunAt).getTime() > now.getTime()) {
     if (scenario === 'cap') {
+      const when = dayRelativeLabel(p.nextRunAt);
       const held = /(\d+) first-time recipient/.exec(p.holdReason ?? '')?.[1];
       const detail = held
         ? `${held} new contact${held === '1' ? '' : 's'} held back — resumes ${when}`
         : `Resumes ${when}`;
       return { headline: 'Daily contact limit reached', detail, kind: 'attention' };
     }
-    if (scenario === 'window') return { headline: 'Outside sending hours', detail: `Sending resumes ${when}`, kind: 'routine' };
-    if (scenario === 'day') return { headline: 'Not an active day', detail: `Sending resumes ${when}`, kind: 'routine' };
-    if (scenario === 'batch') return { headline: 'Between batches', detail: `Next batch ${when}`, kind: 'routine' };
-    if (kind === 'attention') return { headline: 'Needs attention', detail: p.holdReason ?? `Resumes ${when}`, kind };
+    // routine holds resume on their own on a known clock — say so as a live
+    // countdown, with the absolute time alongside for anyone glancing away
+    // and back.
+    const resumesIn = countdownText(p.nextRunAt, now);
+    const abs = clockLabel(p.nextRunAt);
+    if (scenario === 'window')
+      return { headline: 'Outside sending hours', detail: `Sending resumes in ${resumesIn} (${abs})`, kind: 'routine' };
+    if (scenario === 'day')
+      return { headline: 'Not an active day', detail: `Sending resumes in ${resumesIn} (${abs})`, kind: 'routine' };
+    if (scenario === 'batch') {
+      const bp = batchProgress(p);
+      const headline = bp ? `Between batches · batch ${bp.current} of ${bp.total}` : 'Between batches';
+      return { headline, detail: `Next batch in ${resumesIn} (${abs})`, kind: 'routine' };
+    }
+    if (kind === 'attention')
+      return { headline: 'Needs attention', detail: p.holdReason ?? `Resumes ${dayRelativeLabel(p.nextRunAt)}`, kind };
     // no recognized reason at all (older data, a caller that never set one) —
     // still say something rather than leaving "Waiting" unexplained
-    return { headline: 'Waiting', detail: `Continues ${when}`, kind: 'routine' };
+    return { headline: 'Waiting', detail: `Continues in ${resumesIn} (${abs})`, kind: 'routine' };
   }
   return null;
 }
